@@ -24,7 +24,7 @@ npm run validate    # verify plugin.json hashes
 固定版本：`v2026.8.23`
 
 - Release 文件：`https://github.com/maywine/songloft-plugin-miot/releases/download/v2026.8.23/miot.jsplugin.zip`
-- 原始 ZIP SHA-256：`3afdecdbc7b22572913f780898978938d29e2b43d31817020b8abc5a8828879a`
+- 原始 ZIP SHA-256：`1b6facc9dfb30f0e02ad3b6141ecb780fe6e0b87bd70ed8491357205aa543edc`
 - 安装后默认保持停用，核对权限后再手动启用；部署时关闭插件自动更新。
 
 不要把 `latest` 下载地址用于固定部署。Release 同时提供 `miot.jsplugin.zip.sha256`，安装前可执行 `sha256sum -c miot.jsplugin.zip.sha256`。

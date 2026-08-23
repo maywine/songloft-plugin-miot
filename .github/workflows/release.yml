@@ -7,6 +7,11 @@ on:
         description: '版本号（留空则自动生成日期版本，格式：Y.M.D）'
         required: false
         default: ''
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/release-request'
   schedule:
     # 每天北京时间 08:17（UTC 00:17）。此刻 UTC 日期与北京日期一致，版本号不会错位。
     # 仅当「自上次发版以来有新提交」时才真正发版，见 gate job。
@@ -32,7 +37,7 @@ jobs:
         id: check
         run: |
           if [ "${{ github.event_name }}" != "schedule" ]; then
-            echo "手动触发，跳过门禁直接发版"
+            echo "非定时触发，跳过门禁直接发版"
             echo "should_release=true" >> $GITHUB_OUTPUT
             exit 0
           fi
@@ -85,11 +90,20 @@ jobs:
 
       - name: Resolve version
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_VERSION: ${{ github.event.inputs.version }}
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+          if [ "$EVENT_NAME" = "push" ]; then
+            VERSION="$(tr -d '[:space:]' < .github/release-request)"
+          elif [ -n "$REQUESTED_VERSION" ]; then
+            VERSION="$REQUESTED_VERSION"
           else
             VERSION="$(TZ='Asia/Shanghai' date +'%Y.%-m.%-d')"
+          fi
+          if ! echo "$VERSION" | grep -Eq '^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}$'; then
+            echo "invalid release version: $VERSION" >&2
+            exit 1
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "Generated version: ${VERSION}"

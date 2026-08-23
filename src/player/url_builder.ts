@@ -2,6 +2,8 @@
 // 翻译自 Go 源码: plugins/songloft-plugin-xiaomi/player/url_builder.go
 
 import { getHostBaseUrl } from '../utils/http';
+import { getMediaToken } from '../utils/host_security';
+import { redactURLForLog, safeErrorForLog } from '../utils/safe_log';
 
 function isLoopbackUrl(url: string): boolean {
   const protoIdx = url.indexOf('://');
@@ -54,7 +56,7 @@ export async function playbackOptionsFromConfig(
   try {
     return playbackOptionsOf(await configManager.getConfig(), extra);
   } catch (e) {
-    songloft.log.warn('[URLBuilder] 读取播放选项失败，按源格式播放: ' + String(e));
+    songloft.log.warn('[URLBuilder] 读取播放选项失败，按源格式播放: ' + safeErrorForLog(e));
     return { seekSeconds: extra?.seekSeconds, speed: extra?.speed };
   }
 }
@@ -89,6 +91,7 @@ export class URLBuilder {
     id?: number;
     url?: string;
     type?: string;
+    duration?: number;
   }, options?: PlaybackURLOptions): Promise<string> {
     const songUrl = song.url || '';
 
@@ -106,8 +109,16 @@ export class URLBuilder {
     // 导致后续参数被合并进 access_token 的值；服务端认证中间件（internal/middleware/auth.go）
     // 依赖「JWT 不含空格」按空格把 token 剥离、再逐个 k=v 还原后续参数。若把 access_token 挪到
     // 后面，这个还原前提就会被破坏。故 format / radio_transcode 等一律追加在 access_token 之后。
+    if (!song.id || song.id <= 0) {
+      songloft.log.warn('[URLBuilder] relative playback URL is missing song id');
+      return '';
+    }
     const serverHost = options?.baseUrl ?? getHostBaseUrl();
-    const accessToken = await songloft.plugin.getToken();
+    const duration = Math.max(0, Number(song.duration || 0));
+    const ttlSeconds = song.type === 'radio'
+      ? 12 * 60 * 60
+      : Math.max(60 * 60, Math.min(12 * 60 * 60, Math.ceil(duration + 30 * 60)));
+    const accessToken = await getMediaToken({ songId: song.id, ttlSeconds });
     const separator = songUrl.includes('?') ? '&' : '?';
     let url = serverHost + songUrl + separator + 'access_token=' + accessToken;
     if (options?.forceMp3) {
@@ -140,7 +151,7 @@ export class URLBuilder {
     // 诊断：把音箱被指向的 host 落日志，配合后端是否出现 /songs/{id}/play 访问行，
     // 即可判定音箱是否真的拉到了该地址（songloft-org/songloft#405）。仅 host 基址，不含 token。
     if (!options?.baseUrl) {
-      songloft.log.info('[URLBuilder] speaker play host=' + serverHost + ' loopback=' + isLoopbackUrl(url) + ' songId=' + (song.id ?? ''));
+      songloft.log.info('[URLBuilder] speaker play host=' + redactURLForLog(serverHost) + ' loopback=' + isLoopbackUrl(url) + ' songId=' + (song.id ?? ''));
     }
 
     // 回环告警只对「给音箱用的地址」有意义；显式覆盖成本机地址时（插件自己发请求）回环是正常的。

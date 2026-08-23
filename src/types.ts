@@ -8,7 +8,7 @@ export interface AccountConfig {
   account: string;           // 小米账号（用户名/邮箱/手机）
   auth_type: string;         // "password" | "token" | "qrcode"
   login_method: string;      // "password" | "qrcode" | "token"
-  password: string;          // 加密后密码
+  password: string;          // 仅兼容旧存储迁移；新版本始终写空，不持久化原始密码
   pass_token: string;        // passToken
   user_id: string;           // 小米用户ID
   services: Record<string, ServiceTokenInfo>;

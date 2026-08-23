@@ -15,6 +15,7 @@ import { MinaService } from '../service/service';
 import { ConfigManager } from '../config/manager';
 import type { DeviceTargetRef } from '../types';
 import type { PlayMetadata } from '../mina/client';
+import { opaqueID, safeErrorForLog } from '../utils/safe_log';
 
 export class GroupCoordinator {
   private playlistManagerMap: PlaylistManagerMap;
@@ -65,7 +66,7 @@ export class GroupCoordinator {
       try {
         await fn(m);
       } catch (e) {
-        songloft.log.warn(`[GroupCoordinator] fanOut ${label} failed for ${m.account_id}:${m.device_id}: ${String(e)}`);
+        songloft.log.warn(`[GroupCoordinator] fanOut ${label} failed account=${opaqueID(m.account_id)} device=${opaqueID(m.device_id)} error=${safeErrorForLog(e)}`);
       }
     }));
   }

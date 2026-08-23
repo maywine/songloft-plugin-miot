@@ -14,6 +14,7 @@ import type { WebSocketRequest, InboundWebSocket } from '@songloft/plugin-sdk';
 import type { PlaylistManagerMap } from '../player/manager';
 import type { MinaService } from '../service/service';
 import { resolvePlayerStatus } from '../handlers/playlist';
+import { safeErrorForLog } from '../utils/safe_log';
 
 /** 前端约定的状态订阅 WebSocket 子路径（onWebSocket 收到的 req.path） */
 export const WS_STATUS_PATH = '/status/ws';
@@ -52,7 +53,7 @@ async function pushOnce(accountId: string, deviceId: string, pusher: DevicePushe
   try {
     data = await resolvePlayerStatus(playlistManagerMap, minaService, accountId, deviceId);
   } catch (e: any) {
-    songloft.log.warn('[ws/status] resolvePlayerStatus failed: ' + String(e));
+    songloft.log.warn('[ws/status] resolvePlayerStatus failed: ' + safeErrorForLog(e));
     return;
   }
 
@@ -63,7 +64,7 @@ async function pushOnce(accountId: string, deviceId: string, pusher: DevicePushe
   for (const socket of pusher.sockets) {
     if (socket.readyState !== socket.OPEN) continue;
     socket.send(frame).catch((e: any) => {
-      songloft.log.warn('[ws/status] send failed: ' + String(e));
+      songloft.log.warn('[ws/status] send failed: ' + safeErrorForLog(e));
     });
   }
 }

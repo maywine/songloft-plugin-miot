@@ -8,6 +8,7 @@ import { ConfigManager } from '../config/manager';
 import { MinaService } from '../service/service';
 import { URLBuilder, playbackOptionsOf, playbackOptionsFromConfig } from './url_builder';
 import { getHostBaseUrl, callHostAPI } from '../utils/http';
+import { opaqueID, safeErrorForLog, textLength } from '../utils/safe_log';
 import type { PlayState, PlayMode, PlayerStatus, DeviceTargetRef, DeviceGroup } from '../types';
 
 /** 分配临时歌单唯一负数 ID（每个设备/歌手各一个，互不冲突） */
@@ -315,7 +316,7 @@ export class PlaylistManager {
       return false;
     }
 
-    songloft.log.info(`[PlaylistManager] playWithSongs started id=${this.playlistId} label="${this.tempPlaylistName}" index=${this.currentIndex} mode=${this.playMode} total=${this.songs.length}`);
+    songloft.log.info(`[PlaylistManager] playWithSongs started id=${this.playlistId} label_length=${textLength(this.tempPlaylistName)} index=${this.currentIndex} mode=${this.playMode} total=${this.songs.length}`);
     return true;
   }
 
@@ -331,7 +332,7 @@ export class PlaylistManager {
       try {
         return await fn(t);
       } catch (e) {
-        songloft.log.warn(`[PlaylistManager] ${label} failed for ${t.account_id}:${t.device_id}: ${String(e)}`);
+        songloft.log.warn(`[PlaylistManager] ${label} failed account=${opaqueID(t.account_id)} device=${opaqueID(t.device_id)} error=${safeErrorForLog(e)}`);
         return false;
       }
     }));
@@ -362,7 +363,7 @@ export class PlaylistManager {
       try {
         return await this.minaService.pausePlayVerified(t.account_id, t.device_id);
       } catch (e) {
-        songloft.log.warn(`[PlaylistManager] pause failed for ${t.account_id}:${t.device_id}: ${String(e)}`);
+        songloft.log.warn(`[PlaylistManager] pause failed account=${opaqueID(t.account_id)} device=${opaqueID(t.device_id)} error=${safeErrorForLog(e)}`);
         return 'failed' as const;
       }
     }));
@@ -463,7 +464,7 @@ export class PlaylistManager {
         play_mode: normalizedMode,
       });
     } catch (e) {
-      songloft.log.warn('[PlaylistManager] Failed to save play mode: ' + String(e));
+      songloft.log.warn('[PlaylistManager] Failed to save play mode: ' + safeErrorForLog(e));
     }
 
     songloft.log.info('[PlaylistManager] Play mode set to ' + normalizedMode);
@@ -609,7 +610,7 @@ export class PlaylistManager {
     // 不该为此干等，而且此刻 resume 指令已经发出去了，晚 2 秒再补救不影响正常情况的听感。
     // 必须自带 catch：游离的 promise 抛出会变成 QuickJS 里的 unhandled rejection。
     void this.verifyResumeOrRepush(resumeFromSec).catch(e => {
-      songloft.log.warn('[PlaylistManager] Resume verify failed: ' + String(e));
+      songloft.log.warn('[PlaylistManager] Resume verify failed: ' + safeErrorForLog(e));
     });
 
     const song = this.getCurrentSong();
@@ -820,7 +821,7 @@ export class PlaylistManager {
         play_speed: clamped,
       });
     } catch (e) {
-      songloft.log.warn('[PlaylistManager] Failed to save playback speed: ' + String(e));
+      songloft.log.warn('[PlaylistManager] Failed to save playback speed: ' + safeErrorForLog(e));
     }
 
     songloft.log.info(`[PlaylistManager] Playback speed set to ${clamped}`);
@@ -888,7 +889,7 @@ export class PlaylistManager {
         sortOrder = pl.sort_order || 'asc';
       }
     } catch (e) {
-      songloft.log.warn(`[PlaylistManager] loadPlaylistSongs: getById for sort failed playlistId=${playlistId}: ${String(e)}`);
+      songloft.log.warn(`[PlaylistManager] loadPlaylistSongs: getById for sort failed playlistId=${playlistId}: ${safeErrorForLog(e)}`);
     }
 
     const attempt = async (retry: boolean): Promise<boolean> => {
@@ -904,7 +905,7 @@ export class PlaylistManager {
         this.totalSongs = songs.length;
         return songs.length > 0;
       } catch (e) {
-        songloft.log.error(`[PlaylistManager] loadPlaylistSongs exception playlistId=${playlistId}${retry ? ' (retry)' : ''}: ${String(e)}`);
+        songloft.log.error(`[PlaylistManager] loadPlaylistSongs exception playlistId=${playlistId}${retry ? ' (retry)' : ''}: ${safeErrorForLog(e)}`);
         return false;
       }
     };
@@ -930,7 +931,7 @@ export class PlaylistManager {
         songloft.log.warn(`[PlaylistManager] playlist ${playlistId} not found (stale ID), signaling caller to refresh index`);
       }
     } catch (e) {
-      songloft.log.warn(`[PlaylistManager] getById check failed playlistId=${playlistId}: ${String(e)}`);
+      songloft.log.warn(`[PlaylistManager] getById check failed playlistId=${playlistId}: ${safeErrorForLog(e)}`);
     }
     return false;
   }
@@ -988,11 +989,11 @@ export class PlaylistManager {
     // 构造播放URL
     const songURL = await URLBuilder.buildSongURL(song, playbackOptionsOf(config, { seekSeconds, speed: effectiveSpeed }));
     if (!songURL) {
-      songloft.log.error('[PlaylistManager] Failed to build song URL: ' + song.title);
+      songloft.log.error(`[PlaylistManager] failed to build song URL song_id=${song.id}`);
       return false;
     }
 
-    songloft.log.info(`[PlaylistManager] Playing song index=${this.currentIndex} title=${song.title} artist=${song.artist} duration=${song.duration} seek=${seekSeconds} speed=${effectiveSpeed} targets=${this.targets.length}`);
+    songloft.log.info(`[PlaylistManager] playing song_id=${song.id} index=${this.currentIndex} duration=${song.duration} seek=${seekSeconds} speed=${effectiveSpeed} targets=${this.targets.length}`);
 
     // 下发到所有目标设备（分组时为组内全部音箱；传结构化歌曲信息供触屏歌词模式匹配曲库）。
     // 至少一台成功即视为成功；个别成员离线/失败不影响整组继续（自动切歌定时器仍以本机时长驱动）。
@@ -1052,7 +1053,6 @@ export class PlaylistManager {
 
     // 捕获到局部常量：跨 async 边界后 TS 不再对 nextSong.url 做非空收窄。
     const songUrl = nextSong.url;
-    const title = nextSong.title;
     const isLocal = nextSong.type === 'local';
 
     void (async () => {
@@ -1075,9 +1075,9 @@ export class PlaylistManager {
       }
       try {
         await callHostAPI('GET', prefetchPath, undefined, { timeoutMs: 5000 });
-        songloft.log.info(`[PlaylistManager] Prefetch next song index=${nextIdx} title=${title}${forceMp3 ? ' (mp3)' : ''}`);
+        songloft.log.info(`[PlaylistManager] prefetch next song_id=${nextSong.id} index=${nextIdx} force_mp3=${forceMp3}`);
       } catch (e) {
-        songloft.log.warn('[PlaylistManager] Prefetch failed: ' + String(e));
+        songloft.log.warn('[PlaylistManager] prefetch failed: ' + safeErrorForLog(e));
       }
     })();
   }
@@ -1226,7 +1226,7 @@ export class PlaylistManager {
       this.checkTimer = null;
       songloft.log.info('[PlaylistManager] Timer fired');
       this.onSongFinished().catch(e => {
-        songloft.log.error('[PlaylistManager] onSongFinished error: ' + String(e));
+        songloft.log.error('[PlaylistManager] onSongFinished error: ' + safeErrorForLog(e));
       });
     }, delayMs);
 
@@ -1248,7 +1248,7 @@ export class PlaylistManager {
     this.stopPollTimer = setTimeout(() => {
       this.stopPollTimer = null;
       this.checkExternalStop(remainingBudgetMs - wait).catch(e => {
-        songloft.log.warn('[PlaylistManager] checkExternalStop error: ' + String(e));
+        songloft.log.warn('[PlaylistManager] checkExternalStop error: ' + safeErrorForLog(e));
       });
     }, wait);
   }
@@ -1283,7 +1283,7 @@ export class PlaylistManager {
       }
       // status < 0（查询失败/网络抖动）：不计入未命中，避免网络问题误判为外部停止
     } catch (e) {
-      songloft.log.warn('[PlaylistManager] checkExternalStop query failed: ' + String(e));
+      songloft.log.warn('[PlaylistManager] checkExternalStop query failed: ' + safeErrorForLog(e));
     }
 
     if (this.state === 'playing' && this.currentIndex === indexAtCheck && remainingBudgetMs > 0) {
@@ -1335,7 +1335,7 @@ export class PlaylistManager {
     const finishedSong = this.songs[this.currentIndex];
     if (finishedSong && finishedSong.id > 0) {
       callHostAPI('POST', `/api/v1/songs/${finishedSong.id}/played?source=miot`, undefined, { timeoutMs: 3000 }).catch(e => {
-        songloft.log.warn('[PlaylistManager] songPlayed notify failed: ' + String(e));
+        songloft.log.warn('[PlaylistManager] songPlayed notify failed: ' + safeErrorForLog(e));
       });
     }
 
@@ -1411,7 +1411,7 @@ export class PlaylistManager {
             play_mode: this.playMode,
           });
         } catch (e) {
-          songloft.log.warn('[PlaylistManager] Failed to persist temp artist: ' + String(e));
+          songloft.log.warn('[PlaylistManager] Failed to persist temp artist: ' + safeErrorForLog(e));
         }
       }
       return;
@@ -1424,7 +1424,7 @@ export class PlaylistManager {
         temp_artist: '',
       });
     } catch (e) {
-      songloft.log.warn('[PlaylistManager] Failed to persist state: ' + String(e));
+      songloft.log.warn('[PlaylistManager] Failed to persist state: ' + safeErrorForLog(e));
     }
   }
 }
@@ -1462,7 +1462,7 @@ export class PlaylistManagerMap {
       const groups = await this.configManager.getDeviceGroups();
       this.groupsSnapshot = groups.filter(g => g.members && g.members.length >= 2);
     } catch (e) {
-      songloft.log.warn('[PlaylistManagerMap] refreshGroups failed: ' + String(e));
+      songloft.log.warn('[PlaylistManagerMap] refreshGroups failed: ' + safeErrorForLog(e));
       return;
     }
     for (const [key, manager] of Array.from(this.managers.entries())) {
@@ -1648,7 +1648,7 @@ export class PlaylistManagerMap {
       const tempArtist = devCfg.temp_artist;
       if (tempArtist && typeof tempArtist === 'string' && tempArtist.trim()) {
         (manager as any).pendingTempArtist = tempArtist.trim();
-        songloft.log.info(`[PlaylistManagerMap] Pending temp artist restore: "${tempArtist}" for ${deviceId}`);
+        songloft.log.info(`[PlaylistManagerMap] pending temp artist restore artist_length=${textLength(tempArtist)} device=${opaqueID(deviceId)}`);
       }
 
       if (!devCfg.playlist_id || devCfg.playlist_id <= 0) {
@@ -1666,7 +1666,7 @@ export class PlaylistManagerMap {
           sortOrder = pl.sort_order || 'asc';
         }
       } catch (e) {
-        songloft.log.warn(`[PlaylistManagerMap] restoreFromConfig: getById for sort failed: ${String(e)}`);
+        songloft.log.warn(`[PlaylistManagerMap] restoreFromConfig: getById for sort failed: ${safeErrorForLog(e)}`);
       }
       try {
         const result = await songloft.playlists.getSongs(devCfg.playlist_id, { limit: 100000, sort: sortBy, order: sortOrder } as any);
@@ -1676,7 +1676,7 @@ export class PlaylistManagerMap {
           songs = result as any;
         }
       } catch (e) {
-        songloft.log.warn('[PlaylistManagerMap] Failed to load songs via bridge: ' + String(e));
+        songloft.log.warn('[PlaylistManagerMap] Failed to load songs via bridge: ' + safeErrorForLog(e));
       }
 
       if (songs.length > 0) {
@@ -1691,7 +1691,7 @@ export class PlaylistManagerMap {
         songloft.log.info(`[PlaylistManagerMap] Restored playlist from config playlistId=${devCfg.playlist_id} index=${startIndex} mode=${playMode} speed=${speed}`);
       }
     } catch (e) {
-      songloft.log.warn('[PlaylistManagerMap] Failed to restore playlist from config: ' + String(e));
+      songloft.log.warn('[PlaylistManagerMap] Failed to restore playlist from config: ' + safeErrorForLog(e));
     }
   }
 
@@ -1707,7 +1707,7 @@ export class PlaylistManagerMap {
       try {
         const artistLocs = indexingManager.findSongsByArtist(artist);
         if (artistLocs.length === 0) {
-          songloft.log.info(`[PlaylistManagerMap] restoreTempPlaylists: no songs for "${artist}", skipping`);
+          songloft.log.info(`[PlaylistManagerMap] restoreTempPlaylists: no songs artist_length=${textLength(artist)}, skipping`);
           (manager as any).pendingTempArtist = '';
           continue;
         }
@@ -1732,20 +1732,20 @@ export class PlaylistManagerMap {
               }
             }
           } catch (e) {
-            songloft.log.warn(`[PlaylistManagerMap] restoreTempPlaylists: failed to load playlist ${plId}: ${String(e)}`);
+            songloft.log.warn(`[PlaylistManagerMap] restoreTempPlaylists: failed to load playlist ${plId}: ${safeErrorForLog(e)}`);
           }
         }
 
         if (fullSongs.length > 0) {
           const playMode = await this.getDevicePlayMode(manager);
           manager.initWithTempArtist(fullSongs as any, artist, playMode);
-          songloft.log.info(`[PlaylistManagerMap] Restored temp artist "${artist}" with ${fullSongs.length} songs for ${key}`);
+          songloft.log.info(`[PlaylistManagerMap] restored temp artist artist_length=${textLength(artist)} songs=${fullSongs.length} target=${opaqueID(key)}`);
         } else {
           (manager as any).pendingTempArtist = '';
-          songloft.log.info(`[PlaylistManagerMap] restoreTempPlaylists: no playable songs for "${artist}"`);
+          songloft.log.info(`[PlaylistManagerMap] restoreTempPlaylists: no playable songs artist_length=${textLength(artist)}`);
         }
       } catch (e) {
-        songloft.log.warn(`[PlaylistManagerMap] restoreTempPlaylists error for "${artist}": ${String(e)}`);
+        songloft.log.warn(`[PlaylistManagerMap] restoreTempPlaylists error artist_length=${textLength(artist)} error=${safeErrorForLog(e)}`);
         (manager as any).pendingTempArtist = '';
       }
     }

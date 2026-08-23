@@ -8,6 +8,7 @@ import { AccountManager } from '../account/manager';
 import { ConversationMonitor } from '../conversation/monitor';
 import { GroupCoordinator } from '../group/coordinator';
 import { updateDeviceStatusCache, getDeviceStatusCache, getOrFetchDeviceStatus, DEVICE_STATUS_TTL } from './playlist';
+import { opaqueID, safeErrorForLog } from '../utils/safe_log';
 
 /** 解析请求体（兼容 Uint8Array 和 string） */
 function parseBody(req: HTTPRequest): any {
@@ -128,25 +129,25 @@ export function registerDeviceHandlers(
     try {
       const body = parseBody(req);
       const { account_id, device_id, text } = body;
-      const textLength = typeof text === 'string' ? text.length : 0;
-      songloft.log.info(`[/mina/tts] request account_id=${account_id || ''} device_id=${device_id || ''} text_length=${textLength}`);
+      const ttsTextLength = typeof text === 'string' ? text.length : 0;
+      songloft.log.info(`[/mina/tts] request account=${opaqueID(account_id)} device=${opaqueID(device_id)} text_length=${ttsTextLength}`);
       if (!account_id) {
         songloft.log.warn('[/mina/tts] rejected: account_id is required');
         return jsonResponse({ success: false, error: 'account_id is required' });
       }
       if (!device_id || !text) {
-        songloft.log.warn(`[/mina/tts] rejected: device_id/text missing device_id=${device_id || ''} text_length=${textLength}`);
+        songloft.log.warn(`[/mina/tts] rejected: device_id/text missing device=${opaqueID(device_id)} text_length=${ttsTextLength}`);
         return jsonResponse({ success: false, error: 'device_id and text are required' });
       }
       const ok = await minaService.textToSpeech(account_id, device_id, text);
       if (!ok) {
-        songloft.log.warn(`[/mina/tts] failed account_id=${account_id} device_id=${device_id} text_length=${textLength}`);
+        songloft.log.warn(`[/mina/tts] failed account=${opaqueID(account_id)} device=${opaqueID(device_id)} text_length=${ttsTextLength}`);
         return jsonResponse({ success: false, error: 'failed to play tts' });
       }
-      songloft.log.info(`[/mina/tts] success account_id=${account_id} device_id=${device_id} text_length=${textLength}`);
+      songloft.log.info(`[/mina/tts] success account=${opaqueID(account_id)} device=${opaqueID(device_id)} text_length=${ttsTextLength}`);
       return jsonResponse({ success: true, data: { message: 'tts playing' } });
     } catch (e: any) {
-      songloft.log.error('[/mina/tts] error: ' + String(e));
+      songloft.log.error('[/mina/tts] error: ' + safeErrorForLog(e));
       return jsonResponse({ success: false, error: e.message || String(e) });
     }
   });
@@ -238,7 +239,7 @@ export function registerDeviceHandlers(
       try {
         await conversationMonitor.refresh();
       } catch (e) {
-        songloft.log.warn('[/mina/device/managed] refresh conversation monitor failed: ' + String(e));
+        songloft.log.warn('[/mina/device/managed] refresh conversation monitor failed: ' + safeErrorForLog(e));
       }
 
       return jsonResponse({
@@ -367,7 +368,7 @@ export function registerDeviceHandlers(
             }
           }
         } catch (e: any) {
-          songloft.log.warn('[/mina/status] 获取物理状态解析失败，触发降级保护: ' + String(e));
+          songloft.log.warn('[/mina/status] 获取物理状态解析失败，触发降级保护: ' + safeErrorForLog(e));
         }
       }
 

@@ -10,6 +10,7 @@ import { ConfigManager } from '../config/manager';
 import { callHostAPI } from '../utils/http';
 import { findFavoritesPlaylist } from '../utils/favorites';
 import type { PlayMode, PlayState } from '../types';
+import { safeErrorForLog } from '../utils/safe_log';
 
 /** 解析请求体（兼容 Uint8Array 和 string） */
 function parseBody(req: HTTPRequest): any {
@@ -227,7 +228,7 @@ export async function resolvePlayerStatus(
       }
     }
   } catch (e: any) {
-    songloft.log.warn('[player/status] getPlayerStatus failed: ' + String(e));
+    songloft.log.warn('[player/status] getPlayerStatus failed: ' + safeErrorForLog(e));
   }
 
   // 本地歌曲 duration（来自文件元数据）比设备报告的更可靠，
@@ -325,7 +326,7 @@ export function registerPlaylistHandlers(
           sortOrder = pl.sort_order || 'asc';
         }
       } catch (e) {
-        songloft.log.warn(`[playlists/:id/songs] getById for sort failed: ${String(e)}`);
+        songloft.log.warn(`[playlists/:id/songs] getById for sort failed: ${safeErrorForLog(e)}`);
       }
       const songs = await songloft.playlists.getSongs(playlistId, { limit: 100000, brief: true, sort: sortBy, order: sortOrder } as any);
       return jsonResponse({ success: true, data: songs });

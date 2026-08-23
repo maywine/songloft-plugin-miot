@@ -19,6 +19,16 @@ npm run validate    # verify plugin.json hashes
 
 智能音箱设备控制示例插件。本仓库仅提供与宿主 SDK 对接的脚手架代码，**不附带任何第三方设备协议实现或账号体系**，使用者需自行负责接入合规性。
 
+## 安全审计版本
+
+固定版本：`v2026.8.23`
+
+- Release 文件：`https://github.com/maywine/songloft-plugin-miot/releases/download/v2026.8.23/miot.jsplugin.zip`
+- 原始 ZIP 摘要：以同版本发布页随附的校验文件为准。
+- 安装后默认保持停用，核对权限后再手动启用；部署时关闭插件自动更新。
+
+不要把 `latest` 下载地址用于固定部署。Release 同时提供 `miot.jsplugin.zip.sha256`，安装前可执行 `sha256sum -c miot.jsplugin.zip.sha256`。
+
 ## 设备分组（多房间同步）
 
 把多台音箱归入同一「设备分组」后，对组内**任一**音箱的播放控制会自动同步给组内**其他**成员，实现多房间同步播放。
@@ -59,7 +69,7 @@ npm run validate    # verify plugin.json hashes
 
 所以版本号会跳日(比如 `2026.7.25` 的下一版是 `2026.7.27`),这是正常的——中间那天没有改动。需要立刻出包时,维护者可在 Actions 页手动触发,手动触发不受上述门禁限制。
 
-同一天重复发版会覆盖当天的 Release,但版本号不变,已安装的客户端**不会**提示升级,需等次日。
+同一版本的 tag 或 Release 已存在时，工作流会直接拒绝发布，绝不覆盖既有资产。需要再次发版时必须使用新的版本号。
 
 ## 作为搜索源接入 miot（供插件开发者）
 
@@ -112,7 +122,7 @@ function registerToMiot() {
 
 - **不用传 entryPath**:miot 以宿主注入的**可信调用方身份**为准(`from`),插件无法把自己伪造成别的插件。
 - **payload 字段**:`name`(显示名,缺省用 entryPath)、`searchPath`(默认 `/api/search/topone`)、`icon`(可选)。
-- **纯增强、无副作用**:注册只是让你出现在候选下拉;是否启用由用户在配置页决定。miot 会通过宿主插件列表校验你的 `installed/active` 状态,你被卸载后会自动从列表消失。
+- **纯增强、无副作用**:注册只是让你出现在候选下拉;是否启用由用户在配置页决定。miot 通过要求 `inter-plugin` 权限、且只返回单个 entryPath active 布尔值的宿主 bridge 校验状态，不读取插件管理清单；你被停用或卸载后会自动从列表消失。
 - **向后兼容**:内置 `ytdlp/bili/subsonic` 也走这套注册流程,同时保留在 miot 的内置 fallback 列表中,兼容尚未接入的旧版本。
 
 ## Author

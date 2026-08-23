@@ -42,11 +42,40 @@ const lyricHandler = fs.readFileSync(path.join(frontendRoot, '../src/handlers/ly
 const voiceCommandHandler = fs.readFileSync(path.join(frontendRoot, '../src/handlers/voice_command.ts'), 'utf8');
 const voiceEngine = fs.readFileSync(path.join(frontendRoot, '../src/voicecmd/engine.ts'), 'utf8');
 const playerManager = fs.readFileSync(path.join(frontendRoot, '../src/player/manager.ts'), 'utf8');
+const indexingManager = fs.readFileSync(path.join(frontendRoot, '../src/indexing/manager.ts'), 'utf8');
 const pluginTypes = fs.readFileSync(path.join(frontendRoot, '../src/types.ts'), 'utf8');
 const favorites = fs.readFileSync(path.join(frontendRoot, '../src/utils/favorites.ts'), 'utf8');
+const authService = fs.readFileSync(path.join(frontendRoot, '../src/auth/service.ts'), 'utf8');
+const accountHandler = fs.readFileSync(path.join(frontendRoot, '../src/handlers/account.ts'), 'utf8');
+const safeAccount = fs.readFileSync(path.join(frontendRoot, '../src/account/safe_account.ts'), 'utf8');
+const configHandler = fs.readFileSync(path.join(frontendRoot, '../src/handlers/config.ts'), 'utf8');
+const deviceHandler = fs.readFileSync(path.join(frontendRoot, '../src/handlers/device.ts'), 'utf8');
+const onlineSearcher = fs.readFileSync(path.join(frontendRoot, '../src/voicecmd/online_searcher.ts'), 'utf8');
+const searchAuth = fs.readFileSync(path.join(frontendRoot, '../src/voicecmd/search_auth.ts'), 'utf8');
+const conversationMonitor = fs.readFileSync(path.join(frontendRoot, '../src/conversation/monitor.ts'), 'utf8');
+const aiAnalyzer = fs.readFileSync(path.join(frontendRoot, '../src/voicecmd/ai_analyzer.ts'), 'utf8');
+const safeLog = fs.readFileSync(path.join(frontendRoot, '../src/utils/safe_log.ts'), 'utf8');
+const configManager = fs.readFileSync(path.join(frontendRoot, '../src/config/manager.ts'), 'utf8');
+const urlBuilder = fs.readFileSync(path.join(frontendRoot, '../src/player/url_builder.ts'), 'utf8');
+const hostSecurity = fs.readFileSync(path.join(frontendRoot, '../src/utils/host_security.ts'), 'utf8');
+const releaseWorkflow = fs.readFileSync(path.join(frontendRoot, '../.github/workflows/release.yml'), 'utf8');
+const scheduler = fs.readFileSync(path.join(frontendRoot, '../src/schedule/scheduler.ts'), 'utf8');
+const taskExecutor = fs.readFileSync(path.join(frontendRoot, '../src/schedule/executor.ts'), 'utf8');
 const app = fs.readFileSync(path.join(frontendRoot, '../static/js/app.js'), 'utf8');
 const html = fs.readFileSync(path.join(frontendRoot, '../static/index.html'), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(path.join(frontendRoot, '../plugin.json'), 'utf8'));
+
+function collectTypeScriptFiles(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return collectTypeScriptFiles(full);
+    return entry.isFile() && entry.name.endsWith('.ts') ? [full] : [];
+  });
+}
+
+const serverLogLines = collectTypeScriptFiles(path.join(frontendRoot, '../src'))
+  .flatMap((file) => fs.readFileSync(file, 'utf8').split('\n').map((line) => ({ file, line })))
+  .filter(({ line }) => /songloft\.log|console\.(log|warn|error)/.test(line));
 
 assert.equal(manifest.renderEngine, 'webf');
 assert.match(html, /static\/js\/app\.js/);
@@ -304,6 +333,63 @@ assert.match(pluginTypes, /speed: number;\s*\/\/ 当前播放倍速/);
 assert.match(playlistHandler, /songloft\.playlists\.addSongs\(favPlaylist\.id, \[songId\]\)/);
 assert.match(playlistHandler, /songloft\.playlists\.removeSongs\(favPlaylist\.id, \[songId\]\)/);
 assert.match(favorites, /playlist\.id === 1/);
+
+// 安全契约：权限、凭据、外部搜索鉴权和日志脱敏不能回退。
+assert.ok(!manifest.permissions.includes('command'), 'MIoT 不使用命令桥，不得声明 command');
+assert.ok(manifest.permissions.includes('songs.write'), '远程歌曲导入必须显式声明 songs.write');
+assert.ok(manifest.permissions.includes('storage'), '小米凭据必须声明宿主 storage 权限以使用加密 secrets 存储');
+assert.equal(manifest.version, '2026.8.23');
+assert.match(manifest.updateUrl, /raw\.githubusercontent\.com\/maywine\/songloft-plugin-miot/);
+assert.match(manifest.downloadSha256, /^[a-f0-9]{64}$/);
+assert.doesNotMatch(authService, /updates:\s*Record<string, any>\s*=\s*\{[^}]*password[,}]/);
+assert.doesNotMatch(authService, /autoLoginWithPassword/);
+assert.match(authService, /removed \$\{scrubbedPasswords\} persisted password/);
+assert.doesNotMatch(accountHandler, /\.\.\.a,|\.\.\.acc,/);
+assert.match(safeAccount, /function toSafeAccount/);
+assert.match(safeAccount, /has_pass_token: !!account\.pass_token/);
+assert.doesNotMatch(safeAccount, /pass_token:\s*account\.pass_token/);
+assert.match(searchAuth, /if \(isAbsoluteSearchURL\(sourceURL\)\) return ''/);
+assert.match(onlineSearcher, /if \(authorization\) headers\.Authorization = authorization/);
+assert.doesNotMatch(onlineSearcher, /Authorization:\s*authToken/);
+assert.doesNotMatch(onlineSearcher, /body=' \+ text|url="' \+ pushUrl|playUrl="' \+ playUrl/);
+assert.match(voiceSettings, /external-search-test/);
+assert.doesNotMatch(voiceSettings, /source\.token\.trim\(\) \|\| window\.SongloftPlugin\?\.getAuthToken/);
+assert.match(configHandler, /has_external_search_token/);
+assert.match(configHandler, /has_api_key/);
+assert.match(configHandler, /clear_token/);
+assert.match(configHandler, /clear_api_key/);
+assert.doesNotMatch(conversationMonitor, /q="\$\{q\.substring|a="\$\{a\.substring/);
+assert.doesNotMatch(aiAnalyzer, /API response: \$\{content\.slice/);
+assert.match(safeLog, /function redactURLForLog/);
+assert.match(safeLog, /function safeErrorForLog/);
+assert.match(configManager, /songloft\.secrets\.get/);
+assert.match(configManager, /songloft\.secrets\.set/);
+assert.match(configManager, /password: ''/);
+assert.match(urlBuilder, /getMediaToken\(\{ songId: song\.id, ttlSeconds \}\)/);
+assert.match(hostSecurity, /purpose\?: 'proxy-transcode'/);
+assert.match(hostSecurity, /function isHostPluginActive/);
+assert.doesNotMatch(configHandler, /\/api\/v1\/jsplugins\//);
+assert.doesNotMatch(indexingManager, /「\$\{songName\}|"\$\{bestGlobal\.(title|artist)\}|\$\{bestDirectLoc\.(songTitle|playlistName)\}/);
+assert.doesNotMatch(deviceHandler, /account_id=\$\{account_id|device_id=\$\{device_id/);
+assert.doesNotMatch(scheduler, /name=\$\{task\.name\}/);
+assert.doesNotMatch(taskExecutor, /定时任务执行失败[^\n]*error=\$\{safeErrorForLog\(e\)\}/);
+assert.match(releaseWorkflow, /delete manifest\.downloadSha256/);
+assert.match(releaseWorkflow, /root\.downloadSha256 = crypto\.createHash\('sha256'\)/);
+assert.match(releaseWorkflow, /lock\.packages\[''\]\.version = version/);
+assert.match(releaseWorkflow, /git add plugin\.json package\.json package-lock\.json/);
+assert.match(releaseWorkflow, /git commit -s -m/);
+for (const { file, line } of serverLogLines) {
+  assert.doesNotMatch(
+    line,
+    /String\((e|error)\)/,
+    `日志异常必须经 safeErrorForLog: ${path.relative(frontendRoot, file)}: ${line.trim()}`,
+  );
+  assert.doesNotMatch(
+    line,
+    /\$\{(pushUrl|playUrl|directUrl|query|question|answer)\}/,
+    `日志不得直接插入 URL/语音正文: ${path.relative(frontendRoot, file)}: ${line.trim()}`,
+  );
+}
 assert.match(voiceCommandHandler, /router\.post\('\/voice-commands\/sleep-timer'/);
 assert.match(voiceEngine, /setSleepTimer\(/);
 assert.match(playlistHandler, /status\.state === 'stopped'/);

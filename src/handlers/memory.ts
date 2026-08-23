@@ -6,6 +6,7 @@ import { MemoryService } from '../memory';
 import type { ConfigManager } from '../config/manager';
 import type { MemoryLoadResult, MemoryRecord, MemoryStorageAdapter, MemoryStoreSnapshot } from '../memory';
 import { runMemoryV2SelfTest } from '../memory/self_test';
+import { safeErrorForLog } from '../utils/safe_log';
 
 const MEMORY_STORAGE_KEY = 'memory:v1:records';
 
@@ -254,7 +255,7 @@ export function registerMemoryHandlers(
         },
       });
     } catch (error) {
-      songloft.log.warn('[MemoryHandler] list failed: ' + String(error));
+      songloft.log.warn('[MemoryHandler] list failed: ' + safeErrorForLog(error));
       return jsonResponse({ success: false, error: '读取语音记忆失败' }, 500);
     }
   });
@@ -265,7 +266,7 @@ export function registerMemoryHandlers(
       await memoryService.listAmbiguities();
       return jsonResponse({ success: true, data: memoryService.getStats() });
     } catch (error) {
-      songloft.log.warn('[MemoryHandler] stats failed: ' + String(error));
+      songloft.log.warn('[MemoryHandler] stats failed: ' + safeErrorForLog(error));
       return jsonResponse({ success: false, error: '读取语音记忆统计失败' }, 500);
     }
   });
@@ -283,7 +284,7 @@ export function registerMemoryHandlers(
         },
       });
     } catch (error) {
-      songloft.log.warn('[MemoryHandler] entities failed: ' + String(error));
+      songloft.log.warn('[MemoryHandler] entities failed: ' + safeErrorForLog(error));
       return jsonResponse({ success: false, error: '读取歌曲记忆实体失败' }, 500);
     }
   });
@@ -304,7 +305,7 @@ export function registerMemoryHandlers(
       }
       return jsonResponse({ success: true, data: { record: result.record, stats: memoryService.getStats() } });
     } catch (error) {
-      songloft.log.warn('[MemoryHandler] add alias failed: ' + String(error));
+      songloft.log.warn('[MemoryHandler] add alias failed: ' + safeErrorForLog(error));
       return jsonResponse({ success: false, error: '添加别名失败' }, 500);
     }
   });
@@ -321,7 +322,7 @@ export function registerMemoryHandlers(
       }
       return jsonResponse({ success: true, data: { stats: memoryService.getStats() } });
     } catch (error) {
-      songloft.log.warn('[MemoryHandler] delete alias failed: ' + String(error));
+      songloft.log.warn('[MemoryHandler] delete alias failed: ' + safeErrorForLog(error));
       return jsonResponse({ success: false, error: '删除用户说法失败' }, 500);
     }
   });
@@ -338,7 +339,7 @@ export function registerMemoryHandlers(
       }
       return jsonResponse({ success: true, data: { stats: memoryService.getStats() } });
     } catch (error) {
-      songloft.log.warn('[MemoryHandler] delete entity failed: ' + String(error));
+      songloft.log.warn('[MemoryHandler] delete entity failed: ' + safeErrorForLog(error));
       return jsonResponse({ success: false, error: '删除歌曲记忆失败' }, 500);
     }
   });
@@ -349,7 +350,7 @@ export function registerMemoryHandlers(
       const records = await memoryService.listAmbiguities();
       return jsonResponse({ success: true, data: { count: records.length, records } });
     } catch (error) {
-      songloft.log.warn('[MemoryHandler] ambiguities failed: ' + String(error));
+      songloft.log.warn('[MemoryHandler] ambiguities failed: ' + safeErrorForLog(error));
       return jsonResponse({ success: false, error: '读取歧义记录失败' }, 500);
     }
   });
@@ -370,7 +371,7 @@ export function registerMemoryHandlers(
       }
       return jsonResponse({ success: true, data: { id, count: memoryService.count() } });
     } catch (error) {
-      songloft.log.warn('[MemoryHandler] delete failed: ' + String(error));
+      songloft.log.warn('[MemoryHandler] delete failed: ' + safeErrorForLog(error));
       return jsonResponse({ success: false, error: '删除记忆失败' }, 500);
     }
   });
@@ -388,7 +389,7 @@ export function registerMemoryHandlers(
         ...(!ambiguitiesCleared ? { warning: '记忆已清空，但歧义记录清理失败' } : {}),
       });
     } catch (error) {
-      songloft.log.warn('[MemoryHandler] clear failed: ' + String(error));
+      songloft.log.warn('[MemoryHandler] clear failed: ' + safeErrorForLog(error));
       return jsonResponse({ success: false, error: '清空记忆失败' }, 500);
     }
   });

@@ -4,6 +4,7 @@
 import { jsonResponse, parseQuery } from '@songloft/plugin-sdk';
 import type { Router, HTTPRequest } from '@songloft/plugin-sdk';
 import { AccountManager } from '../account/manager';
+import { toSafeAccount } from '../account/safe_account';
 import { AuthService } from '../auth/service';
 
 /** 解析请求体（兼容 Uint8Array 和 string） */
@@ -41,7 +42,7 @@ export function registerAccountHandlers(
         return jsonResponse({ success: false, error: 'account is required' });
       }
       const acc = await accountManager.createAccount(account, auth_type || 'password');
-      return jsonResponse({ success: true, data: acc });
+      return jsonResponse({ success: true, data: toSafeAccount(acc) });
     } catch (e: any) {
       return jsonResponse({ success: false, error: e.message || String(e) });
     }
@@ -51,16 +52,7 @@ export function registerAccountHandlers(
   router.get('/accounts', async (req: HTTPRequest) => {
     try {
       const accounts = await accountManager.getAccounts();
-      const safeAccounts = accounts.map(a => ({
-        ...a,
-        password: a.password ? '***' : '',
-        services: Object.fromEntries(
-          Object.entries(a.services || {}).map(([k, v]) => [
-            k,
-            { ...v, service_token: '***', ssecurity: '***' },
-          ]),
-        ),
-      }));
+      const safeAccounts = accounts.map(toSafeAccount);
       return jsonResponse({ success: true, data: safeAccounts });
     } catch (e: any) {
       return jsonResponse({ success: false, error: e.message || String(e) });
@@ -79,17 +71,7 @@ export function registerAccountHandlers(
       if (!acc) {
         return jsonResponse({ success: false, error: 'account not found' });
       }
-      const safe = {
-        ...acc,
-        password: acc.password ? '***' : '',
-        services: Object.fromEntries(
-          Object.entries(acc.services || {}).map(([k, v]) => [
-            k,
-            { ...v, service_token: '***', ssecurity: '***' },
-          ]),
-        ),
-      };
-      return jsonResponse({ success: true, data: safe });
+      return jsonResponse({ success: true, data: toSafeAccount(acc) });
     } catch (e: any) {
       return jsonResponse({ success: false, error: e.message || String(e) });
     }

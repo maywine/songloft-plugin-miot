@@ -13,6 +13,7 @@ import type { IndexedPlaylist } from '../indexing/manager';
 import { ConversationMonitor } from '../conversation/monitor';
 import { GroupCoordinator } from '../group/coordinator';
 import type { ScheduledTask, TaskLog, TaskTarget, TaskParams, PlayMode, DeviceConfig } from '../types';
+import { opaqueID, safeErrorForLog, textLength } from '../utils/safe_log';
 
 /** 解析后的单个目标设备 */
 interface DeviceTarget {
@@ -62,7 +63,7 @@ export class TaskExecutor {
 
     const targets = await this.resolveTargetDevices(task.target);
     if (targets.length === 0) {
-      songloft.log.warn(`[TaskExecutor] 定时任务无目标设备 task_id=${task.id} name=${task.name}`);
+      songloft.log.warn(`[TaskExecutor] 定时任务无目标设备 task_id=${task.id} name_length=${textLength(task.name)}`);
       return [{
         task_id: task.id,
         task_name: task.name,
@@ -80,7 +81,7 @@ export class TaskExecutor {
     for (const target of targets) {
       const key = target.accountId + ':' + target.deviceId;
       if (covered.has(key)) {
-        songloft.log.info(`[TaskExecutor] 跳过已被同组带动的目标设备 device=${target.deviceId}`);
+        songloft.log.info(`[TaskExecutor] 跳过已被同组带动的目标设备 device=${opaqueID(target.deviceId)}`);
         continue;
       }
       const log = await this.executeOnDevice(task, target);
@@ -94,7 +95,7 @@ export class TaskExecutor {
           const peers = await this.groupCoordinator.getGroupPeers(target.accountId, target.deviceId);
           for (const p of peers) covered.add(p.account_id + ':' + p.device_id);
         } catch (e) {
-          songloft.log.warn(`[TaskExecutor] 读取分组成员失败 device=${target.deviceId}: ${String(e)}`);
+          songloft.log.warn(`[TaskExecutor] 读取分组成员失败 device=${opaqueID(target.deviceId)} error=${safeErrorForLog(e)}`);
         }
       }
     }
@@ -160,7 +161,7 @@ export class TaskExecutor {
       }
 
       if (!found) {
-        songloft.log.warn(`[TaskExecutor] 未找到设备 device_id=${deviceId}`);
+        songloft.log.warn(`[TaskExecutor] 未找到设备 device=${opaqueID(deviceId)}`);
       }
     }
 
@@ -220,7 +221,7 @@ export class TaskExecutor {
       songloft.log.info(`[TaskExecutor] ${log.message} task_id=${task.id}`);
     } catch (e) {
       log.message = e instanceof Error ? e.message : String(e);
-      songloft.log.error(`[TaskExecutor] 全局动作执行失败 task_id=${task.id} error=${log.message}`);
+      songloft.log.error(`[TaskExecutor] 全局动作执行失败 task_id=${task.id} error=${safeErrorForLog(e)}`);
     }
 
     return log;
@@ -240,7 +241,7 @@ export class TaskExecutor {
     };
 
     songloft.log.info(
-      `[TaskExecutor] 执行定时任务 task_id=${task.id} action=${task.action} account=${target.accountId} device=${target.deviceId}`
+      `[TaskExecutor] 执行定时任务 task_id=${task.id} action=${task.action} account=${opaqueID(target.accountId)} device=${opaqueID(target.deviceId)}`
     );
 
     try {
@@ -268,12 +269,12 @@ export class TaskExecutor {
 
       log.success = true;
       log.message = message;
-      songloft.log.info(`[TaskExecutor] 定时任务执行成功 task_id=${task.id} device=${target.deviceId}`);
+      songloft.log.info(`[TaskExecutor] 定时任务执行成功 task_id=${task.id} device=${opaqueID(target.deviceId)}`);
     } catch (e) {
       log.success = false;
       log.message = e instanceof Error ? e.message : String(e);
       songloft.log.error(
-        `[TaskExecutor] 定时任务执行失败 task_id=${task.id} device=${target.deviceId} error=${log.message}`
+        `[TaskExecutor] 定时任务执行失败 task_id=${task.id} device=${opaqueID(target.deviceId)} error_type=${e instanceof Error ? e.name : typeof e} error_length=${textLength(log.message)}`
       );
     }
 
@@ -312,7 +313,7 @@ export class TaskExecutor {
       throw new Error(`未找到匹配的歌单: ${params.playlist_name || params.playlist_id}`);
     }
 
-    songloft.log.info(`[TaskExecutor] 匹配到歌单 name=${params.playlist_name || ''} id=${playlist.id} matched=${playlist.name}`);
+    songloft.log.info(`[TaskExecutor] 匹配到歌单 requested_length=${textLength(params.playlist_name)} id=${playlist.id} matched_length=${textLength(playlist.name)}`);
 
     // 读取设备持久化状态，供「从上次进度继续」和「跟随上次播放模式」使用
     const devCfg = await this.getDeviceConfig(target);
@@ -329,9 +330,9 @@ export class TaskExecutor {
           const result = await this.indexingManager.findSongInPlaylist(pid, params.song_name);
           if (result.found) {
             idx = result.index;
-            songloft.log.info(`[TaskExecutor] 匹配到歌曲 song_name=${params.song_name} index=${idx}`);
+            songloft.log.info(`[TaskExecutor] 匹配到歌曲 song_name_length=${textLength(params.song_name)} index=${idx}`);
           } else {
-            songloft.log.warn(`[TaskExecutor] 未找到匹配的歌曲，从第一首开始 song_name=${params.song_name}`);
+            songloft.log.warn(`[TaskExecutor] 未找到匹配的歌曲，从第一首开始 song_name_length=${textLength(params.song_name)}`);
           }
         } else if (params.song_id) {
           const result = await this.indexingManager.findSongIndexInPlaylistById(pid, params.song_id);
@@ -404,7 +405,7 @@ export class TaskExecutor {
       const devices = await this.configManager.getDevices(target.accountId);
       return devices.find(d => d.device_id === target.deviceId) ?? null;
     } catch (e) {
-      songloft.log.warn(`[TaskExecutor] 读取设备配置失败 device=${target.deviceId}: ${String(e)}`);
+      songloft.log.warn(`[TaskExecutor] 读取设备配置失败 device=${opaqueID(target.deviceId)} error=${safeErrorForLog(e)}`);
       return null;
     }
   }

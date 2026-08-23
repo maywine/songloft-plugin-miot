@@ -1,11 +1,12 @@
 {
   "name": "miot",
-  "version": "2026.8.21",
+  "version": "2026.8.23",
   "description": "通过 MIoT 协议把歌曲投放到智能音箱设备",
   "private": true,
   "scripts": {
     "prebuild": "node scripts/fetch-holidays.mjs && node scripts/build-pinyin-data.mjs",
-    "build": "songloft-plugin build",
+    "build": "node scripts/build-plugin.mjs",
+    "test": "node tests/run-security.mjs && node frontend/tests/run.mjs",
     "predev": "node scripts/fetch-holidays.mjs && node scripts/build-pinyin-data.mjs",
     "dev": "songloft-plugin dev",
     "validate": "songloft-plugin validate",

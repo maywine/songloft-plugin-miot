@@ -8,6 +8,7 @@ import { ConfigManager } from '../config/manager';
 import type { ScheduledTask, TaskSchedule, TaskLog } from '../types';
 import { TaskExecutor } from './executor';
 import { lookupHoliday } from '../utils/holiday';
+import { safeErrorForLog, textLength } from '../utils/safe_log';
 
 /** tick 间隔 30 秒 */
 const TICK_INTERVAL_MS = 30000;
@@ -47,13 +48,13 @@ export class Scheduler {
     // 启动 30s 周期 tick
     this.tickTimer = setInterval(() => {
       this.tick().catch(e => {
-        songloft.log.error('[Scheduler] tick error: ' + String(e));
+        songloft.log.error('[Scheduler] tick error: ' + safeErrorForLog(e));
       });
     }, TICK_INTERVAL_MS);
 
     // 立即执行一次
     this.tick().catch(e => {
-      songloft.log.error('[Scheduler] initial tick error: ' + String(e));
+      songloft.log.error('[Scheduler] initial tick error: ' + safeErrorForLog(e));
     });
 
     songloft.log.info('[Scheduler] 定时任务调度器已启动');
@@ -131,7 +132,7 @@ export class Scheduler {
       }
 
       songloft.log.info(
-        `[Scheduler] 定时任务触发 task_id=${task.id} name=${task.name} action=${task.action} time=${timeStr}`
+        `[Scheduler] 定时任务触发 task_id=${task.id} name_length=${textLength(task.name)} action=${task.action} time=${timeStr}`
       );
 
       // 执行任务

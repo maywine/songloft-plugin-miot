@@ -4,6 +4,7 @@
 
 import { ungzip } from 'pako';
 import { httpFetch } from '../utils/http';
+import { opaqueID, safeErrorForLog, textLength } from '../utils/safe_log';
 import type { XiaomiTokenInfo } from '../types';
 import {
   MIIO_API_BASE_URL,
@@ -37,12 +38,12 @@ export class MiIOClient {
   async textToSpeechByCommand(did: string, ttsCommand: string, text: string): Promise<boolean> {
     const [siid, aiid] = parseTTSCommand(ttsCommand);
     if (!did || siid <= 0 || aiid <= 0) {
-      songloft.log.warn(`[MiIOClient] invalid TTS command did=${did || ''} command=${ttsCommand}`);
+      songloft.log.warn(`[MiIOClient] invalid TTS command did=${opaqueID(did)} command_length=${textLength(ttsCommand)}`);
       return false;
     }
 
     const safeText = text.replace(/ /g, ',');
-    songloft.log.info(`[MiIOClient] TTS command start did=${did} siid=${siid} aiid=${aiid} text_length=${text.length}`);
+    songloft.log.info(`[MiIOClient] TTS command start did=${opaqueID(did)} siid=${siid} aiid=${aiid} text_length=${text.length}`);
 
     const result = await this.miotAction(did, siid, aiid, [safeText]);
     const innerCode = result && typeof result === 'object' && 'code' in result
@@ -51,9 +52,9 @@ export class MiIOClient {
     const ok = innerCode === 0;
 
     if (ok) {
-      songloft.log.info(`[MiIOClient] TTS command success did=${did} siid=${siid} aiid=${aiid} result=${summarizeForLog(result)}`);
+      songloft.log.info(`[MiIOClient] TTS command success did=${opaqueID(did)} siid=${siid} aiid=${aiid} result=${summarizeForLog(result)}`);
     } else {
-      songloft.log.warn(`[MiIOClient] TTS command non-zero code=${innerCode} did=${did} result=${summarizeForLog(result)}`);
+      songloft.log.warn(`[MiIOClient] TTS command non-zero code=${innerCode} did=${opaqueID(did)} result=${summarizeForLog(result)}`);
     }
     return ok;
   }
@@ -105,7 +106,7 @@ export class MiIOClient {
         body,
       });
     } catch (e) {
-      songloft.log.warn(`[MiIOClient] request failed uri=${uri}: ${String(e)}`);
+      songloft.log.warn(`[MiIOClient] request failed uri=${uri}: ${safeErrorForLog(e)}`);
       return null;
     }
 
@@ -120,7 +121,7 @@ export class MiIOClient {
     try {
       parsed = decodeMiIOT(service.ssecurity, encoded._nonce, text, gzip) as MiIOResponse | null;
     } catch (e) {
-      songloft.log.warn(`[MiIOClient] decode response failed uri=${uri}: ${String(e)}`);
+      songloft.log.warn(`[MiIOClient] decode response failed uri=${uri}: ${safeErrorForLog(e)}`);
       return null;
     }
 
@@ -129,10 +130,10 @@ export class MiIOClient {
       return null;
     }
 
-    songloft.log.info(`[MiIOClient] decoded response uri=${uri} response=${summarizeForLog(parsed)}`);
+    songloft.log.info(`[MiIOClient] decoded response uri=${uri} code=${parsed.code} has_result=${'result' in parsed}`);
 
     if ('code' in parsed && Number(parsed.code) !== 0) {
-      songloft.log.warn(`[MiIOClient] non-zero outer code=${parsed.code} message=${parsed.message || ''}`);
+      songloft.log.warn(`[MiIOClient] non-zero outer code=${parsed.code} message_length=${textLength(parsed.message)}`);
       return null;
     }
 
@@ -278,13 +279,13 @@ function hexToBytes(hex: string): number[] {
   return out;
 }
 
-function summarizeForLog(value: unknown, maxLength = 600): string {
-  if (value === undefined) return 'undefined';
-  if (value === null) return 'null';
-  try {
-    const text = typeof value === 'string' ? value : JSON.stringify(value);
-    return text.length > maxLength ? text.slice(0, maxLength) + '...(truncated)' : text;
-  } catch {
-    return String(value);
-  }
+function summarizeForLog(value: unknown): string {
+	if (value === undefined) return 'undefined';
+	if (value === null) return 'null';
+	if (typeof value === 'string') return `string(length=${value.length})`;
+	if (Array.isArray(value)) return `array(length=${value.length})`;
+	if (typeof value === 'object') {
+		return `object(keys=${Object.keys(value as Record<string, unknown>).sort().join(',')})`;
+	}
+	return typeof value;
 }

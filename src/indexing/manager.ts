@@ -4,6 +4,7 @@
 /// <reference types="@songloft/plugin-sdk" />
 
 import { segmentQuery, toPinyin } from './segmenter';
+import { safeErrorForLog, textLength } from '../utils/safe_log';
 
 // ===== 类型定义 =====
 
@@ -560,7 +561,7 @@ export class IndexingManager {
           loaded++;
         } catch (e) {
           failed++;
-          songloft.log.warn(`歌单歌曲缓存: 获取歌单歌曲失败 playlist_id=${pl.id}: ${e instanceof Error ? e.message : String(e)}`);
+          songloft.log.warn(`歌单歌曲缓存: 获取歌单歌曲失败 playlist_id=${pl.id}: ${safeErrorForLog(e)}`);
         }
         await yieldToRuntime();
       }
@@ -622,7 +623,7 @@ export class IndexingManager {
     this.playlistCacheRevalidate = false;
     const token = ++this.playlistCacheToken;
     this.runPlaylistCacheLoad(token, playlists).catch(e => {
-      songloft.log.warn(`歌单歌曲缓存后台加载异常: ${e instanceof Error ? e.message : String(e)}`);
+      songloft.log.warn(`歌单歌曲缓存后台加载异常: ${safeErrorForLog(e)}`);
       if (token === this.playlistCacheToken) {
         this.playlistCacheLoading = false;
       }
@@ -688,8 +689,7 @@ export class IndexingManager {
       songloft.log.info(`轻量索引构建完成: playlists=${newPlaylists.length} songs=${newSongs.length}, 歌单歌曲缓存后台加载已启动`);
       return { success: true, songCount: newSongs.length, playlistCount: newPlaylists.length };
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      songloft.log.warn(`索引刷新失败: ${msg}`);
+      songloft.log.warn(`索引刷新失败: ${safeErrorForLog(e)}`);
       if (this.songs.length === 0 && this.playlists.length === 0) {
         this.indexReady = false;
       }
@@ -863,7 +863,7 @@ export class IndexingManager {
     const now = Date.now();
     if (!this.isRefreshing && now - this.lastPlaylistRefreshTime >= PLAYLIST_REFRESH_COOLDOWN_MS) {
       this.lastPlaylistRefreshTime = now;
-      songloft.log.warn(`[IndexingManager] findPlaylistByNameWithRefresh: 内存索引未命中「${name}」，触发全量刷新`);
+      songloft.log.warn(`[IndexingManager] findPlaylistByNameWithRefresh: miss name_length=${textLength(name)}, triggering refresh`);
       await this.refresh();
       result = this.findPlaylistByName(name);
     } else {
@@ -933,7 +933,7 @@ export class IndexingManager {
     if (songs.length === 0) {
       // 「歌单真的空」与「缓存还没加载到这个歌单」表现相同，但后者是个 bug 现场，要能区分。
       if (!cacheReady || !this.playlistCacheLoadedIds.has(playlistId)) {
-        songloft.log.warn(`[IndexingManager] findSongInPlaylist: 歌单 ${playlistId} 的歌曲缓存未就绪，无法定位「${songName}」，将从第 0 首开始`);
+        songloft.log.warn(`[IndexingManager] findSongInPlaylist: playlist=${playlistId} cache_not_ready query_length=${textLength(songName)}, fallback_index=0`);
       }
       return { index: 0, found: false };
     }
@@ -994,7 +994,7 @@ export class IndexingManager {
     const matchedSongs = this.searchSong(songName);
     const matchedSongIds = new Set(matchedSongs.map(s => s.id));
 
-    songloft.log.info(`[IndexingManager] findSongByName query="${songName}" indexMatches=${matchedSongs.length}`);
+    songloft.log.info(`[IndexingManager] findSongByName query_length=${textLength(songName)} index_matches=${matchedSongs.length}`);
 
     // 2. 遍历缓存的歌单歌曲，同时做两件事：
     //    a) 收集全局索引命中歌曲的位置
@@ -1046,7 +1046,7 @@ export class IndexingManager {
     for (let i = 0; i < matchedSongs.length; i++) {
       const loc = songLocationMap.get(matchedSongs[i].id);
       if (loc) {
-        songloft.log.info(`[IndexingManager] findSongByName done (${elapsedMs}ms) → "${loc.songTitle}" by "${loc.artist}" in playlist="${loc.playlistName}" (globalRank=#${i + 1})`);
+        songloft.log.info(`[IndexingManager] findSongByName done dur_ms=${elapsedMs} title_length=${textLength(loc.songTitle)} artist_length=${textLength(loc.artist)} playlist_length=${textLength(loc.playlistName)} global_rank=${i + 1}`);
         return loc;
       }
     }
@@ -1066,12 +1066,12 @@ export class IndexingManager {
         // 正在重新加载、或某个歌单一直拉取失败时它仍是 true。
         if (!this.isPlaylistCacheComplete()) {
           songloft.log.warn(
-            `[IndexingManager] findSongByName (${elapsedMs}ms) 全局命中 "${bestGlobal.title}" 但歌单缓存覆盖不全` +
+            `[IndexingManager] findSongByName dur_ms=${elapsedMs} global_hit title_length=${textLength(bestGlobal.title)} cache_incomplete ` +
             `(loaded=${this.playlistCacheLoadedIds.size}/${this.playlists.length}, waited=${cacheReady})：无法确认是否在歌单中，退化为独立歌曲直推（无自动续播）`
           );
         } else {
           songloft.log.warn(
-            `[IndexingManager] findSongByName (${elapsedMs}ms) 全局命中 "${bestGlobal.title}" by "${bestGlobal.artist}" ` +
+            `[IndexingManager] findSongByName dur_ms=${elapsedMs} global_hit title_length=${textLength(bestGlobal.title)} artist_length=${textLength(bestGlobal.artist)} ` +
             `(score=${bestGlobalScore.toFixed(1)}) 不在任何歌单，转独立歌曲路径`
           );
         }
@@ -1081,7 +1081,7 @@ export class IndexingManager {
 
     // 4b. 无高质量全局匹配，使用歌单内直接模糊匹配的最佳结果（已有 MIN_MATCH_SCORE 阈值保护）
     if (bestDirectLoc) {
-      songloft.log.info(`[IndexingManager] findSongByName done (${elapsedMs}ms) → fallback "${bestDirectLoc.songTitle}" in playlist="${bestDirectLoc.playlistName}" (score=${bestDirectScore.toFixed(1)})`);
+      songloft.log.info(`[IndexingManager] findSongByName done dur_ms=${elapsedMs} fallback_title_length=${textLength(bestDirectLoc.songTitle)} playlist_length=${textLength(bestDirectLoc.playlistName)} score=${bestDirectScore.toFixed(1)}`);
     } else {
       songloft.log.info(`[IndexingManager] findSongByName done (${elapsedMs}ms) → no match (bestDirectScore=${bestDirectScore.toFixed(1)})`);
     }
@@ -1132,7 +1132,7 @@ export class IndexingManager {
       best.titlePinyin, best.artistPinyin, best.albumPinyin,
     );
     if (bestScore < MIN_MATCH_SCORE) {
-      songloft.log.info(`[IndexingManager] bestIndexedMatch: "${best.title}" by "${best.artist}" score=${bestScore.toFixed(1)} below threshold, skipping`);
+      songloft.log.info(`[IndexingManager] bestIndexedMatch title_length=${textLength(best.title)} artist_length=${textLength(best.artist)} score=${bestScore.toFixed(1)} below threshold, skipping`);
       return null;
     }
     return best;
@@ -1159,7 +1159,7 @@ export class IndexingManager {
       const now = Date.now();
       if (!this.isRefreshing && now - this.lastStandaloneRefreshTime >= STANDALONE_REFRESH_COOLDOWN_MS) {
         this.lastStandaloneRefreshTime = now;
-        songloft.log.warn(`[IndexingManager] findStandaloneSongByName: 内存索引未命中「${songName}」，触发全量刷新`);
+        songloft.log.warn(`[IndexingManager] findStandaloneSongByName: miss query_length=${textLength(songName)}, triggering refresh`);
         await this.refresh();
         best = this.bestIndexedMatch(songName);
       } else {
@@ -1173,11 +1173,11 @@ export class IndexingManager {
     try {
       const fullSong = await songloft.songs.getById(best.id);
       if (fullSong && fullSong.url) {
-        songloft.log.warn(`[IndexingManager] 独立歌曲路径命中: "${fullSong.title}" - ${fullSong.artist} id=${fullSong.id} type=${(fullSong as any).type} duration=${(fullSong as any).duration}`);
+        songloft.log.warn(`[IndexingManager] standalone hit title_length=${textLength(fullSong.title)} artist_length=${textLength(fullSong.artist)} id=${fullSong.id} type=${(fullSong as any).type} duration=${(fullSong as any).duration}`);
         return fullSong;
       }
     } catch (e) {
-      songloft.log.warn('[IndexingManager] Failed to get standalone song by id: ' + String(e));
+      songloft.log.warn('[IndexingManager] Failed to get standalone song by id: ' + safeErrorForLog(e));
     }
     return null;
   }
@@ -1235,7 +1235,7 @@ export class IndexingManager {
     }
 
     this.indexReady = true;
-    songloft.log.info(`[IndexingManager] 增量索引: 已加入歌曲 id=${song.id} "${title}"${playlistId ? ` playlist=${playlistId}` : ''} (songs=${this.songs.length})`);
+    songloft.log.info(`[IndexingManager] incremental index song_id=${song.id} title_length=${textLength(title)}${playlistId ? ` playlist=${playlistId}` : ''} songs=${this.songs.length}`);
   }
 
   /**

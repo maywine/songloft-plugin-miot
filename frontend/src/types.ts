@@ -11,6 +11,8 @@ export interface AIConfig {
   enabled?: boolean;
   api_url?: string;
   api_key?: string;
+  has_api_key?: boolean;
+  clear_api_key?: boolean;
   model?: string;
   timeout?: number;
 }
@@ -35,6 +37,8 @@ export interface MiotConfig {
   external_search_enabled: boolean;
   external_search_url: string;
   external_search_token: string;
+  has_external_search_token?: boolean;
+  clear_external_search_token?: boolean;
   external_search_sources: SearchSource[];
   external_search_playlist_id: string;
   external_search_timeout: number;
@@ -59,6 +63,8 @@ export interface SearchSource {
   name: string;
   url: string;
   token: string;
+  has_token?: boolean;
+  clear_token?: boolean;
   enabled: boolean;
 }
 

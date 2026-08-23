@@ -6,6 +6,7 @@ import { CookieJar } from '../utils/cookie';
 import { fetchWithRedirects } from '../utils/http';
 import { generateDeviceId } from '../utils/crypto';
 import { isPollDebug } from '../utils/debug';
+import { opaqueID, redactURLForLog, safeErrorForLog, textLength as logTextLength } from '../utils/safe_log';
 import {
   MINA_API_BASE_URL,
   MINA_SID,
@@ -145,7 +146,7 @@ export class MinaHTTPClient {
       if (lyricsMode?.enabled) {
         const audioId = await this.searchAudioId(lyricsMode.metadata || lyricsMode.songName || '', fallbackAudioId);
         const displayName = this.formatPlayMetadataForLog(lyricsMode.metadata || lyricsMode.songName || '');
-        songloft.log.info(`[MinaClient] touchscreen lyrics selected audioID=${audioId} fallbackAudioID=${fallbackAudioId} song=${displayName}`);
+        songloft.log.info(`[MinaClient] touchscreen lyrics selected audioID=${audioId} fallbackAudioID=${fallbackAudioId} metadata_length=${logTextLength(displayName)}`);
         // xiaomusic 的 continue_play 通过 _type=1 设置 audio_type=MUSIC；这是触屏歌词/封面的前提。
         const ok = await this.playByMusicURL(deviceId, url, true, audioId, 'play-music:lyrics');
         if (ok) {
@@ -211,7 +212,7 @@ export class MinaHTTPClient {
     );
     const songList = result?.data?.songList;
     if (!songList || songList.length === 0) {
-      songloft.log.info(`[MinaClient] searchAudioId no match for: ${query}, using default audioID=${audioId}`);
+      songloft.log.info(`[MinaClient] searchAudioId no match query_length=${logTextLength(query)} default_audio_id=${audioId}`);
       return audioId;
     }
 
@@ -224,8 +225,7 @@ export class MinaHTTPClient {
       name: song.name || '',
       artist: song.artist?.name || '',
     }));
-    songloft.log.info(`[MinaClient] searchAudioId candidates query=${query} fallbackAudioID=${fallbackAudioId} candidates=${this.summarizeForLog(candidates, 1200)}`);
-    songloft.log.info(`[MinaClient] searchAudioId rawSongs query=${query} resultCode=${result?.code ?? 'unknown'} rawSongs=${this.summarizeForLog(songList.slice(0, 6), 4000)}`);
+    songloft.log.info(`[MinaClient] searchAudioId candidates query_length=${logTextLength(query)} fallback_audio_id=${fallbackAudioId} candidate_count=${candidates.length}`);
 
     audioId = songList[0].audioID || audioId;
 
@@ -249,7 +249,7 @@ export class MinaHTTPClient {
       }
     }
 
-    songloft.log.info(`[MinaClient] searchAudioId selected query=${query} audioID=${audioId} reason=${selectedReason} targetSong=${targetSong} targetArtist=${firstArtist || ''}`);
+    songloft.log.info(`[MinaClient] searchAudioId selected query_length=${logTextLength(query)} audio_id=${audioId} reason=${selectedReason} title_length=${logTextLength(targetSong)} artist_length=${logTextLength(firstArtist)}`);
     return audioId;
   }
 
@@ -375,7 +375,7 @@ export class MinaHTTPClient {
       }
     }
 
-    songloft.log.warn(`[MinaClient] pause ignored by device=${deviceId} (still playing), escalating to stop`);
+    songloft.log.warn(`[MinaClient] pause ignored device=${opaqueID(deviceId)} action=stop`);
     if (await this.playerOperation(deviceId, 'stop')) {
       return 'stopped';
     }
@@ -462,37 +462,37 @@ export class MinaHTTPClient {
     if (ttsCommand) {
       if (miotDID && this.hasXiaomiIOToken()) {
         try {
-          songloft.log.info(`[MinaClient] textToSpeech using MiIO TTS command hardware=${hardware} did=${miotDID} command=${ttsCommand} text_length=${textLength}`);
+          songloft.log.info(`[MinaClient] textToSpeech using MiIO TTS command hardware=${hardware} did=${opaqueID(miotDID)} command=${ttsCommand} text_length=${textLength}`);
           const ok = await new MiIOClient(this.tokenInfo).textToSpeechByCommand(miotDID, ttsCommand, text);
           if (ok) {
             return true;
           }
-          songloft.log.warn(`[MinaClient] MiIO TTS command failed, falling back to Mina UBus hardware=${hardware} device=${deviceId}`);
+          songloft.log.warn(`[MinaClient] MiIO TTS command failed, falling back to Mina UBus hardware=${hardware} device=${opaqueID(deviceId)}`);
         } catch (e) {
-          songloft.log.warn(`[MinaClient] MiIO TTS command error, falling back to Mina UBus hardware=${hardware} device=${deviceId}: ${String(e)}`);
+          songloft.log.warn(`[MinaClient] MiIO TTS command error, falling back to Mina UBus hardware=${hardware} device=${opaqueID(deviceId)} error=${safeErrorForLog(e)}`);
         }
       } else {
-        songloft.log.warn(`[MinaClient] MiIO TTS command unavailable hardware=${hardware} did=${miotDID || ''} has_xiaomiio=${this.hasXiaomiIOToken()}`);
+        songloft.log.warn(`[MinaClient] MiIO TTS command unavailable hardware=${hardware} did=${opaqueID(miotDID)} has_xiaomiio=${this.hasXiaomiIOToken()}`);
       }
     }
 
     const message = { text };
-    songloft.log.info(`[MinaClient] textToSpeech start device=${deviceId} hardware=${hardware} text_length=${textLength}`);
+    songloft.log.info(`[MinaClient] textToSpeech start device=${opaqueID(deviceId)} hardware=${hardware} text_length=${textLength}`);
 
     const mibrainResult = await this.ubusRequest(deviceId, 'text_to_speech', 'mibrain', message, 'tts:mibrain');
     if (mibrainResult !== null) {
-      songloft.log.info(`[MinaClient] textToSpeech success endpoint=mibrain/text_to_speech device=${deviceId} code=${mibrainResult.code}`);
+      songloft.log.info(`[MinaClient] textToSpeech success endpoint=mibrain/text_to_speech device=${opaqueID(deviceId)} code=${mibrainResult.code}`);
       return true;
     }
-    songloft.log.warn(`[MinaClient] text_to_speech/mibrain failed, falling back to player_play_tts/mediaplayer device=${deviceId}`);
+    songloft.log.warn(`[MinaClient] text_to_speech/mibrain failed, falling back to player_play_tts/mediaplayer device=${opaqueID(deviceId)}`);
 
     const fallbackResult = await this.ubusRequest(deviceId, 'player_play_tts', 'mediaplayer', message, 'tts:mediaplayer');
     if (fallbackResult !== null) {
-      songloft.log.info(`[MinaClient] textToSpeech success endpoint=mediaplayer/player_play_tts device=${deviceId} code=${fallbackResult.code}`);
+      songloft.log.info(`[MinaClient] textToSpeech success endpoint=mediaplayer/player_play_tts device=${opaqueID(deviceId)} code=${fallbackResult.code}`);
       return true;
     }
 
-    songloft.log.warn(`[MinaClient] textToSpeech failed on all endpoints device=${deviceId} text_length=${textLength}`);
+    songloft.log.warn(`[MinaClient] textToSpeech failed on all endpoints device=${opaqueID(deviceId)} text_length=${textLength}`);
     return false;
   }
 
@@ -518,7 +518,7 @@ export class MinaHTTPClient {
    * @param limit - 记录数量限制（默认2）
    */
   async getLatestAskFromXiaoai(deviceId: string, hardware: string, limit = 2): Promise<AskMessage[] | null> {
-    if (isPollDebug()) songloft.log.info(`[ConversationMonitor] getLatestAskFromXiaoai deviceId=${deviceId} hardware=${hardware} limit=${limit} useMinaForAsk=${shouldUseMinaForAsk(hardware)}`);
+    if (isPollDebug()) songloft.log.info(`[ConversationMonitor] getLatestAsk device=${opaqueID(deviceId)} hardware=${hardware} limit=${limit} use_mina=${shouldUseMinaForAsk(hardware)}`);
     // 部分设备需要通过 ubus 方式获取
     if (shouldUseMinaForAsk(hardware)) {
       const ubusResult = await this.getLatestAskByUbus(deviceId);
@@ -529,7 +529,7 @@ export class MinaHTTPClient {
     // 与 Go 版一致：在循环外部生成时间戳，重试时复用相同 URL
     const timestamp = Date.now();
     const apiUrl = formatLatestAskUrl(hardware, timestamp, limit);
-    if (isPollDebug()) songloft.log.info(`[ConversationMonitor] getLatestAskFromXiaoai apiUrl=${apiUrl}`);
+    if (isPollDebug()) songloft.log.info(`[ConversationMonitor] getLatestAsk url=${redactURLForLog(apiUrl)}`);
 
     // 大多数设备通过 xiaoai API 获取，带3次重试
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -615,7 +615,7 @@ export class MinaHTTPClient {
 
     if (previous) {
       if (logLabel) {
-        songloft.log.info(`[MinaClient] ${logLabel} waiting for previous ubus request device=${deviceId}`);
+        songloft.log.info(`[MinaClient] ${logLabel} waiting for previous ubus request device=${opaqueID(deviceId)}`);
       }
       await previous.catch(() => {});
     }
@@ -647,7 +647,7 @@ export class MinaHTTPClient {
       .join('&');
 
     if (logLabel) {
-      songloft.log.info(`[MinaClient] ${logLabel} ubus request device=${deviceId} path=${path} method=${method} request_id=${requestId} message=${this.summarizeUbusMessageForLog(message)}`);
+      songloft.log.info(`[MinaClient] ${logLabel} ubus request device=${opaqueID(deviceId)} path=${path} method=${method} request_id=${requestId} message=${this.summarizeUbusMessageForLog(message)}`);
     }
 
     const result = await this.doPostRequest<UbusResponse>(apiUrl, body, logLabel);
@@ -655,7 +655,7 @@ export class MinaHTTPClient {
     // 如果401并且有回调，尝试刷新
     if (result === null) {
       if (logLabel) {
-        songloft.log.warn(`[MinaClient] ${logLabel} ubus request returned null device=${deviceId} path=${path} method=${method}`);
+        songloft.log.warn(`[MinaClient] ${logLabel} ubus request returned null device=${opaqueID(deviceId)} path=${path} method=${method}`);
       }
       return null;
     }
@@ -663,13 +663,13 @@ export class MinaHTTPClient {
     // 检查响应码
     if (result.code !== 0) {
       if (logLabel) {
-        songloft.log.warn(`[MinaClient] ${logLabel} ubus non-zero code=${result.code} message=${result.message || ''} data=${this.summarizeForLog(result.data)}`);
+        songloft.log.warn(`[MinaClient] ${logLabel} ubus non-zero code=${result.code} message_length=${logTextLength(result.message)}`);
       }
       return null;
     }
 
     if (logLabel) {
-      songloft.log.info(`[MinaClient] ${logLabel} ubus success code=${result.code} message=${result.message || ''} data=${this.summarizeForLog(result.data)}`);
+      songloft.log.info(`[MinaClient] ${logLabel} ubus success code=${result.code} message_length=${logTextLength(result.message)}`);
     }
     return result;
   }
@@ -692,15 +692,15 @@ export class MinaHTTPClient {
     return true;
   }
 
-  private summarizeForLog(value: unknown, maxLength = 600): string {
+  private summarizeForLog(value: unknown): string {
     if (value === undefined) return 'undefined';
     if (value === null) return 'null';
-    try {
-      const text = typeof value === 'string' ? value : JSON.stringify(value);
-      return text.length > maxLength ? text.slice(0, maxLength) + '...(truncated)' : text;
-    } catch {
-      return String(value);
+    if (typeof value === 'string') return `string(length=${value.length})`;
+    if (Array.isArray(value)) return `array(length=${value.length})`;
+    if (typeof value === 'object') {
+      return `object(keys=${Object.keys(value as Record<string, unknown>).sort().join(',')})`;
     }
+    return typeof value;
   }
 
   private summarizeUbusMessageForLog(message: Record<string, unknown>): string {
@@ -785,7 +785,7 @@ export class MinaHTTPClient {
       }
     } catch (e) {
       if (logLabel) {
-        songloft.log.warn(`[MinaClient] ${logLabel} HTTP POST fetch failed: ${String(e)}`);
+        songloft.log.warn(`[MinaClient] ${logLabel} HTTP POST fetch failed: ${safeErrorForLog(e)}`);
       }
       return null;
     }
@@ -808,7 +808,7 @@ export class MinaHTTPClient {
             }
           } catch (e) {
             if (logLabel) {
-              songloft.log.warn(`[MinaClient] ${logLabel} HTTP POST retry failed: ${String(e)}`);
+              songloft.log.warn(`[MinaClient] ${logLabel} HTTP POST retry failed: ${safeErrorForLog(e)}`);
             }
             return null;
           }
@@ -835,12 +835,12 @@ export class MinaHTTPClient {
     try {
       const text = response.text() as string;
       if (logLabel) {
-        songloft.log.info(`[MinaClient] ${logLabel} HTTP POST response=${this.summarizeForLog(text)}`);
+        songloft.log.info(`[MinaClient] ${logLabel} HTTP POST response_length=${text.length}`);
       }
       return JSON.parse(transformResponseText ? transformResponseText(text) : text) as T;
     } catch (e) {
       if (logLabel) {
-        songloft.log.warn(`[MinaClient] ${logLabel} HTTP POST parse failed: ${String(e)}`);
+        songloft.log.warn(`[MinaClient] ${logLabel} HTTP POST parse failed: ${safeErrorForLog(e)}`);
       }
       return null;
     }
@@ -865,7 +865,7 @@ export class MinaHTTPClient {
       const fetchResult = await fetchWithRedirects(apiUrl, { method: 'GET', headers }, new CookieJar(), 0);
       response = fetchResult.response;
     } catch (e) {
-      songloft.log.warn(`[ConversationMonitor] doGetLatestAskFromXiaoai fetch error: ${String(e)}`);
+      songloft.log.warn(`[ConversationMonitor] doGetLatestAsk fetch error: ${safeErrorForLog(e)}`);
       return null;
     }
 
@@ -886,8 +886,7 @@ export class MinaHTTPClient {
 
     try {
       const text = response.text() as string;
-      // 打印原始响应体（最多 1000 字符）
-      if (isPollDebug()) songloft.log.info(`[ConversationMonitor] doGetLatestAskFromXiaoai raw response (${text.length} chars): ${text.substring(0, 1000)}`);
+      if (isPollDebug()) songloft.log.info(`[ConversationMonitor] doGetLatestAsk response_length=${text.length}`);
 
       const result = JSON.parse(text) as Record<string, unknown>;
 
@@ -922,7 +921,7 @@ export class MinaHTTPClient {
       if (isPollDebug()) songloft.log.info(`[ConversationMonitor] doGetLatestAskFromXiaoai parsed ${messages.length} messages`);
       return messages;
     } catch (e) {
-      songloft.log.warn(`[ConversationMonitor] doGetLatestAskFromXiaoai parse error: ${String(e)}`);
+      songloft.log.warn(`[ConversationMonitor] doGetLatestAsk parse error: ${safeErrorForLog(e)}`);
       return null;
     }
   }
@@ -957,7 +956,7 @@ export class MinaHTTPClient {
           // 该条会被静默吞掉且无任何日志（原实现 `|| 0` 的后果）
           const timestamp = parseInt(nlp.meta?.timestamp ?? '', 10);
           if (!Number.isFinite(timestamp) || timestamp <= 0) {
-            songloft.log.warn(`[ConversationMonitor] getLatestAskByUbus skip record with invalid timestamp device=${deviceId} raw=${String(nlp.meta?.timestamp)}`);
+            songloft.log.warn(`[ConversationMonitor] getLatestAskByUbus skip record with invalid timestamp device=${opaqueID(deviceId)} raw_type=${typeof nlp.meta?.timestamp}`);
             continue;
           }
 

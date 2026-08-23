@@ -9,6 +9,7 @@ import { ConfigManager } from '../config/manager';
 import type { ConversationMessage, AskMessage, WebhookConfig } from '../types';
 import { MinaHTTPClient } from '../mina/client';
 import { isPollDebug } from '../utils/debug';
+import { opaqueID, redactURLForLog, safeErrorForLog, textLength } from '../utils/safe_log';
 
 // ===== 常量 =====
 
@@ -149,7 +150,7 @@ export class ConversationMonitor {
       try {
         await this.pollAll();
       } catch (e) {
-        songloft.log.warn('[ConversationMonitor] Initial priming failed: ' + String(e));
+        songloft.log.warn('[ConversationMonitor] initial priming failed: ' + safeErrorForLog(e));
       }
       // 建基线期间可能被 stop()
       if (!this.enabled) return;
@@ -159,11 +160,11 @@ export class ConversationMonitor {
       }
       this.pollTimer = setInterval(() => {
         this.pollAll().catch(e => {
-          songloft.log.error('[ConversationMonitor] pollAll error: ' + String(e));
+          songloft.log.error('[ConversationMonitor] pollAll error: ' + safeErrorForLog(e));
         });
       }, this.pollInterval);
     } catch (e) {
-      songloft.log.error('[ConversationMonitor] start error: ' + String(e));
+      songloft.log.error('[ConversationMonitor] start error: ' + safeErrorForLog(e));
     }
   }
 
@@ -302,7 +303,7 @@ export class ConversationMonitor {
     for (const key of this.devices.keys()) {
       if (!managedKeys.has(key)) {
         this.devices.delete(key);
-        songloft.log.info(`[ConversationMonitor] Device removed from monitoring: ${key}`);
+        songloft.log.info(`[ConversationMonitor] device removed id=${opaqueID(key)}`);
       }
     }
 
@@ -319,7 +320,7 @@ export class ConversationMonitor {
         primed: false,
         isRunning: true,
       });
-      songloft.log.info(`[ConversationMonitor] Device added to monitoring: ${dev.deviceName} (${key})`);
+      songloft.log.info(`[ConversationMonitor] device added id=${opaqueID(key)}`);
     }
   }
 
@@ -353,14 +354,14 @@ export class ConversationMonitor {
     try {
       askMessages = await client.getLatestAskFromXiaoai(dm.deviceId, dm.hardware, 5);
     } catch (e) {
-      songloft.log.warn(`[ConversationMonitor] Failed to get conversations: ${dm.deviceId} ${String(e)}`);
+      songloft.log.warn(`[ConversationMonitor] fetch failed device=${opaqueID(dm.deviceId)} error=${safeErrorForLog(e)}`);
       return;
     }
 
     // 取记录失败：跳过本轮。既不动基线也不建基线——拿失败当「没有记录」去建基线，
     // 会让基线停在 0，等取记录恢复后整批历史对话被当成新消息重放
     if (askMessages === null) {
-      if (isPollDebug()) songloft.log.info(`[ConversationMonitor] pollDevice device=${dm.deviceId} fetch failed, skip round (primed=${dm.primed})`);
+      if (isPollDebug()) songloft.log.info(`[ConversationMonitor] poll fetch failed device=${opaqueID(dm.deviceId)} primed=${dm.primed}`);
       return;
     }
 
@@ -369,10 +370,10 @@ export class ConversationMonitor {
     const msgCount = askMessages.length;
     if (isPollDebug() && msgCount > 0) {
       const summary = askMessages.map(m => {
-        const q = m.response?.answer?.[0]?.question ?? '?';
-        return `[ts=${m.timestamp_ms} q="${q.substring(0, 50)}"]`;
+        const q = m.response?.answer?.[0]?.question;
+        return `[ts=${m.timestamp_ms} question_length=${textLength(q)}]`;
       }).join(', ');
-      songloft.log.info(`[ConversationMonitor] pollDevice device=${dm.deviceId} localNowMs=${Date.now()} returned ${msgCount} messages: ${summary}`);
+      songloft.log.info(`[ConversationMonitor] poll device=${opaqueID(dm.deviceId)} local_now_ms=${Date.now()} count=${msgCount} messages=${summary}`);
     }
 
     // 首轮：只用服务端返回值建立去重基线，不当作新消息（不触发回调 / Webhook / 缓冲）
@@ -406,7 +407,7 @@ export class ConversationMonitor {
     }
 
     // 打印过滤结果（稳态无新消息时不打）
-    if (isPollDebug()) songloft.log.info(`[ConversationMonitor] pollDevice device=${dm.deviceId} after filter: ${newMessages.length} new (lastTimestampMs=${dm.lastTimestampMs})`);
+    if (isPollDebug()) songloft.log.info(`[ConversationMonitor] poll filtered device=${opaqueID(dm.deviceId)} new_count=${newMessages.length} last_timestamp_ms=${dm.lastTimestampMs}`);
 
     if (newMessages.length === 0) {
       return;
@@ -417,13 +418,13 @@ export class ConversationMonitor {
 
     // 追加到全局消息缓冲区
     for (const msg of newMessages) {
-      const q = msg.message?.response?.answer?.[0]?.question ?? '?';
-      const a = msg.message?.response?.answer?.[0]?.content ?? '?';
-      songloft.log.info(`[ConversationMonitor] addMessage ts=${msg.message.timestamp_ms} q="${q.substring(0, 80)}" a="${a.substring(0, 80)}"`);
+      const q = msg.message?.response?.answer?.[0]?.question;
+      const a = msg.message?.response?.answer?.[0]?.content;
+      songloft.log.info(`[ConversationMonitor] message received ts=${msg.message.timestamp_ms} question_length=${textLength(q)} answer_length=${textLength(a)}`);
       this.addMessage(msg);
     }
 
-    songloft.log.info(`[ConversationMonitor] New messages account=${dm.accountId} device=${dm.deviceId} count=${newMessages.length}`);
+    songloft.log.info(`[ConversationMonitor] new messages account=${opaqueID(dm.accountId)} device=${opaqueID(dm.deviceId)} count=${newMessages.length}`);
 
     // 触发所有内部回调
     await this.notifyCallbacks(newMessages);
@@ -452,7 +453,7 @@ export class ConversationMonitor {
     dm.lastTimestampMs = batchMax;
     dm.primed = true;
 
-    songloft.log.info(`[ConversationMonitor] Baseline primed device=${dm.deviceId} name=${dm.deviceName} lastTimestampMs=${batchMax} (from ${askMessages.length} records, not delivered as new)`);
+    songloft.log.info(`[ConversationMonitor] baseline primed device=${opaqueID(dm.deviceId)} last_timestamp_ms=${batchMax} records=${askMessages.length}`);
 
     // 时钟偏移告警：只有「服务端时间戳超前本地时间」这一个方向能确诊——对话不可能
     // 发生在未来。反方向（本地时钟超前）无法从这里判断，因为「最新一条对话是几天前」
@@ -460,7 +461,7 @@ export class ConversationMonitor {
     if (batchMax > 0) {
       const skewMs = batchMax - Date.now();
       if (skewMs > CLOCK_SKEW_WARN_MS) {
-        songloft.log.warn(`[ConversationMonitor] 本地系统时钟可能落后约 ${Math.round(skewMs / 1000)}s：设备 ${dm.deviceName} 最新对话的服务端时间戳比本地当前时间还晚。请校准服务器时间（NTP）。对话监听本身不受影响（基线取自服务端），但 token 有效期判断等依赖本地时钟的逻辑会出错。`);
+        songloft.log.warn(`[ConversationMonitor] 本地系统时钟可能落后约 ${Math.round(skewMs / 1000)}s：设备 ${opaqueID(dm.deviceId)} 的服务端时间戳晚于本地时间。请校准服务器时间（NTP）。`);
       }
     }
   }
@@ -486,7 +487,7 @@ export class ConversationMonitor {
           await cb(msg);
         }
       } catch (e) {
-        songloft.log.error(`[ConversationMonitor] Callback error name=${name}: ${String(e)}`);
+        songloft.log.error(`[ConversationMonitor] callback error name=${name}: ${safeErrorForLog(e)}`);
       }
     }
   }
@@ -523,9 +524,9 @@ export class ConversationMonitor {
         headers: { 'Content-Type': 'application/json' },
         body: payload,
       });
-      songloft.log.info(`[ConversationMonitor] Webhook sent id=${wh.id} url=${wh.url}`);
+      songloft.log.info(`[ConversationMonitor] webhook sent id=${wh.id} url=${redactURLForLog(wh.url)}`);
     } catch (e) {
-      songloft.log.warn(`[ConversationMonitor] Webhook failed id=${wh.id} url=${wh.url}: ${String(e)}`);
+      songloft.log.warn(`[ConversationMonitor] webhook failed id=${wh.id} url=${redactURLForLog(wh.url)} error=${safeErrorForLog(e)}`);
     }
   }
 

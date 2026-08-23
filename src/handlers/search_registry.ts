@@ -6,6 +6,7 @@
 /// <reference types="@songloft/plugin-sdk" />
 
 import { ConfigManager } from '../config/manager';
+import { textLength } from '../utils/safe_log';
 
 /** register-search-provider 的 payload（entryPath 不在此，以可信 from 为准） */
 interface RegisterProviderPayload {
@@ -32,7 +33,7 @@ export function registerSearchProviderComm(configManager: ConfigManager): void {
       searchPath: typeof p.searchPath === 'string' ? p.searchPath : '',
       icon: typeof p.icon === 'string' ? p.icon : undefined,
     });
-    songloft.log.info(`[search-registry] 已注册搜索源候选: ${entryPath} (${p.name || entryPath})`);
+    songloft.log.info(`[search-registry] 已注册搜索源候选 entry=${entryPath} name_length=${textLength(p.name || entryPath)}`);
     return { ok: true };
   });
 

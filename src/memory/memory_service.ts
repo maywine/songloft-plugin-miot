@@ -17,6 +17,7 @@ import type {
   MemoryUnclassifiedView,
 } from './types';
 import { DEFAULT_MEMORY_MAX_RECORDS, normalizeMemoryMaxRecords } from './types';
+import { safeErrorForLog } from '../utils/safe_log';
 
 function hashString(value: string): string {
   let hash = 5381;
@@ -143,7 +144,7 @@ export class MemoryService {
       if (!normalizedQuery) return null;
       return this.records.get(normalizedQuery) ?? null;
     } catch (error) {
-      songloft.log.warn('[VoiceMemoryV2] error fallback stage="find_exact" error="' + String(error) + '"');
+      songloft.log.warn('[VoiceMemoryV2] error fallback stage="find_exact" error="' + safeErrorForLog(error) + '"');
       return null;
     }
   }
@@ -153,7 +154,7 @@ export class MemoryService {
       if (!this.initialized) return { status: 'miss', reason: 'memory_not_initialized', candidateCount: 0 };
       return this.resolver.resolve(query);
     } catch (error) {
-      songloft.log.warn('[VoiceMemoryV2] error fallback stage="resolve" error="' + String(error) + '"');
+      songloft.log.warn('[VoiceMemoryV2] error fallback stage="resolve" error="' + safeErrorForLog(error) + '"');
       return { status: 'miss', reason: 'resolver_error', candidateCount: 0 };
     }
   }
@@ -322,7 +323,7 @@ export class MemoryService {
         }, HIT_FLUSH_DELAY_MS);
       }
     } catch (error) {
-      songloft.log.warn('[VoiceMemoryV3] error stage="queue_hit" error="' + String(error) + '"');
+      songloft.log.warn('[VoiceMemoryV3] error stage="queue_hit" error="' + safeErrorForLog(error) + '"');
     }
   }
 
@@ -538,7 +539,7 @@ export class MemoryService {
         .slice(0, MAX_AMBIGUITY_RECORDS);
       this.scheduleAmbiguitySave();
     } catch (error) {
-      songloft.log.warn('[VoiceMemoryV3] error stage="record_ambiguous" error="' + String(error) + '"');
+      songloft.log.warn('[VoiceMemoryV3] error stage="record_ambiguous" error="' + safeErrorForLog(error) + '"');
     }
   }
 
@@ -581,7 +582,7 @@ export class MemoryService {
     } catch (error) {
       this.ambiguities = [];
       this.ambiguityStorageHealthy = false;
-      songloft.log.warn('[VoiceMemoryV3] error stage="load_ambiguous" error="' + String(error) + '"');
+      songloft.log.warn('[VoiceMemoryV3] error stage="load_ambiguous" error="' + safeErrorForLog(error) + '"');
     }
   }
 
@@ -603,7 +604,7 @@ export class MemoryService {
       }));
       return true;
     } catch (error) {
-      songloft.log.warn('[VoiceMemoryV3] error stage="save_ambiguous" error="' + String(error) + '"');
+      songloft.log.warn('[VoiceMemoryV3] error stage="save_ambiguous" error="' + safeErrorForLog(error) + '"');
       return false;
     }
   }
@@ -636,7 +637,7 @@ export class MemoryService {
     try {
       return await this.adapter.save(snapshot);
     } catch (error) {
-      songloft.log.warn('[VoiceMemoryV2] error fallback stage="save" error="' + String(error) + '"');
+      songloft.log.warn('[VoiceMemoryV2] error fallback stage="save" error="' + safeErrorForLog(error) + '"');
       return false;
     }
   }
@@ -646,12 +647,12 @@ export class MemoryService {
       try {
         return await operation();
       } catch (error) {
-        songloft.log.warn(`[VoiceMemoryV2] error fallback stage="${label}" error="${String(error)}"`);
+        songloft.log.warn(`[VoiceMemoryV2] error fallback stage="${label}" error="${safeErrorForLog(error)}"`);
         return false;
       }
     });
     this.writeQueue = task.then(() => undefined, error => {
-      songloft.log.warn(`[VoiceMemoryV2] error fallback stage="write_queue" error="${String(error)}"`);
+      songloft.log.warn(`[VoiceMemoryV2] error fallback stage="write_queue" error="${safeErrorForLog(error)}"`);
     });
     return task;
   }
@@ -683,6 +684,6 @@ export class MemoryService {
     this.entityIndex.clear();
     this.initialized = false;
     this.storageHealthy = false;
-    songloft.log.warn(`[VoiceMemoryV2] error fallback stage="${stage}" error="${String(error)}"`);
+    songloft.log.warn(`[VoiceMemoryV2] error fallback stage="${stage}" error="${safeErrorForLog(error)}"`);
   }
 }

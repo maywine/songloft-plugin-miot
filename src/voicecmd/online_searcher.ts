@@ -9,6 +9,9 @@ import { URLBuilder, playbackOptionsOf } from '../player/url_builder';
 import { ConfigManager } from '../config/manager';
 import { IndexingManager } from '../indexing/manager';
 import { GroupCoordinator } from '../group/coordinator';
+import { redactURLForLog, safeErrorForLog, textLength } from '../utils/safe_log';
+import { getMediaToken } from '../utils/host_security';
+import { buildSearchAuthorization, isAbsoluteSearchURL } from './search_auth';
 import type { ExternalSearchSource, PlayMode } from '../types';
 import type { PlaylistManager } from '../player/manager';
 
@@ -114,7 +117,7 @@ export class OnlineSearcher {
   private async resolveSourceUrl(source: ExternalSearchSource): Promise<string> {
     const searchUrl = (source.url || '').trim();
     if (!searchUrl) return '';
-    if (searchUrl.startsWith('http://') || searchUrl.startsWith('https://')) {
+    if (isAbsoluteSearchURL(searchUrl)) {
       return searchUrl;
     }
     // 相对路径 = 内部插件/宿主接口，走 loopback API 地址（避免 hairpin NAT）
@@ -123,16 +126,19 @@ export class OnlineSearcher {
   }
 
   /**
-   * 解析单个源的认证 Token
-   * 源自定义的 token 优先，否则使用插件 token
+   * 解析单个源的 Authorization 值。
+   *
+   * - 用户显式配置的 token 始终优先；
+   * - 相对路径属于宿主内部插件调用，才允许回退到插件 Token；
+   * - 绝对 URL 属于外部服务，未配置 token 时绝不能携带 Songloft 内部 Token。
    */
-  private async resolveSourceToken(source: ExternalSearchSource): Promise<string> {
+  private async resolveSourceAuthorization(source: ExternalSearchSource): Promise<string> {
     const userToken = (source.token || '').trim();
-    if (userToken) {
-      return userToken;
+    const searchUrl = (source.url || '').trim();
+    if (userToken || isAbsoluteSearchURL(searchUrl)) {
+      return buildSearchAuthorization(searchUrl, userToken, '');
     }
-    const pluginToken = await songloft.plugin.getToken();
-    return `Bearer ${pluginToken}`;
+    return buildSearchAuthorization(searchUrl, '', await songloft.plugin.getToken());
   }
 
   /**
@@ -171,7 +177,8 @@ export class OnlineSearcher {
       songloft.log.warn('[OnlineSearcher] server_host 未配置，无法走转码代理，原样直推（可能无法解码）');
       return directUrl;
     }
-    const token = await songloft.plugin.getToken();
+    const ttlSeconds = Math.max(60 * 60, Math.min(12 * 60 * 60, Math.ceil((duration || 0) + 30 * 60)));
+    const token = await getMediaToken({ purpose: 'proxy-transcode', ttlSeconds });
     const params = new URLSearchParams();
     params.set('access_token', token); // 必须第一
     params.set('url', directUrl);
@@ -206,11 +213,11 @@ export class OnlineSearcher {
     for (let i = 0; i < tasks.length; i++) {
       const r = await tasks[i];
       if (r) {
-        songloft.log.info(`[OnlineSearcher] Hit from source[${i}] "${sources[i].name || sources[i].url}" for keyword: ${keyword}`);
+        songloft.log.info(`[OnlineSearcher] hit source_index=${i} source_id=${sources[i].id} keyword_length=${textLength(keyword)}`);
         return r;
       }
     }
-    songloft.log.warn('[OnlineSearcher] No source matched for keyword: ' + keyword);
+    songloft.log.warn(`[OnlineSearcher] no source matched keyword_length=${textLength(keyword)}`);
     return null;
   }
 
@@ -239,35 +246,37 @@ export class OnlineSearcher {
     try {
       const baseUrl = await this.resolveSourceUrl(source);
       if (!baseUrl) return null;
-      const authToken = await this.resolveSourceToken(source);
-      songloft.log.info('[OnlineSearcher] [Diag] Request POST ' + baseUrl + ' body=' + JSON.stringify(reqBody));
+      const authorization = await this.resolveSourceAuthorization(source);
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authorization) headers.Authorization = authorization;
+      songloft.log.info(`[OnlineSearcher] request source_id=${source.id} url=${redactURLForLog(baseUrl)} keyword_length=${textLength(keyword)} has_hint=${!!hint}`);
       const fetchPromise = fetch(baseUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: authToken },
+        headers,
         body: JSON.stringify(reqBody),
       });
       const fetchResp = await Promise.race([fetchPromise, timeoutPromise]);
 
       const text = await fetchResp.text();
-      songloft.log.info('[OnlineSearcher] [Diag] Response status=' + fetchResp.status + ' body=' + text);
+      songloft.log.info(`[OnlineSearcher] response source_id=${source.id} status=${fetchResp.status} body_length=${text.length}`);
       try {
         resp = JSON.parse(text) as SearchOneResponse;
       } catch {
-        songloft.log.warn('[OnlineSearcher] Failed to parse search/topone response: ' + text);
+        songloft.log.warn(`[OnlineSearcher] response parse failed source_id=${source.id} body_length=${text.length}`);
         return null;
       }
     } catch (e: any) {
       if (e.message === 'AbortError') {
-        songloft.log.warn(`[OnlineSearcher] Search/topone timeout (>${timeoutMs / 1000}s) for source "${source.name || source.url}" keyword: ` + keyword);
+        songloft.log.warn(`[OnlineSearcher] timeout source_id=${source.id} timeout_sec=${timeoutMs / 1000} keyword_length=${textLength(keyword)}`);
       } else {
-        songloft.log.warn('[OnlineSearcher] Search/topone fetch error: ' + String(e));
+        songloft.log.warn(`[OnlineSearcher] fetch error source_id=${source.id} error=${safeErrorForLog(e)}`);
       }
       return null;
     }
 
     // 解析响应
     if (!resp || resp.code !== 0 || !resp.data) {
-      songloft.log.warn('[OnlineSearcher] Search/topone returned code=' + (resp?.code ?? 'null') + ' for keyword: ' + keyword);
+      songloft.log.warn(`[OnlineSearcher] non-success response source_id=${source.id} code=${resp?.code ?? 'null'} keyword_length=${textLength(keyword)}`);
       return null;
     }
 
@@ -298,14 +307,13 @@ export class OnlineSearcher {
         // 音箱只可靠播放 mp3；webm/opus 等不可解码格式走 songloft 转码代理（songloft-org/songloft#394）
         const pushUrl = await this.resolveDirectPushUrl(directUrl, song.duration);
         const transcoded = pushUrl !== directUrl;
-        const songName = song.artist ? `${song.title}-${song.artist}` : song.title;
-        songloft.log.info('[OnlineSearcher] [Diag] No-import direct push: songName="' + songName + '" url="' + pushUrl + '"' + (transcoded ? ' (transcoded)' : ''));
+        songloft.log.info(`[OnlineSearcher] no-import push title_length=${textLength(song.title)} artist_length=${textLength(song.artist)} transcoded=${transcoded}`);
         const played = await minaService.playURL(accountId, deviceId, pushUrl, {
           title: song.title,
           artist: song.artist,
         });
         if (!played) {
-          songloft.log.error('[OnlineSearcher] No-import: failed to push URL to device: ' + pushUrl);
+          songloft.log.error(`[OnlineSearcher] no-import push failed transcoded=${transcoded}`);
           return false;
         }
         // 分组同步：让组内其他成员播放同一 URL
@@ -313,16 +321,16 @@ export class OnlineSearcher {
           title: song.title,
           artist: song.artist,
         });
-        songloft.log.info('[OnlineSearcher] Playing online song (no-import)' + (transcoded ? ' [transcoded]' : '') + ': ' + song.title + ' - ' + song.artist + ' url=' + pushUrl);
+        songloft.log.info(`[OnlineSearcher] no-import playback started transcoded=${transcoded}`);
         return true;
       }
-      songloft.log.info('[OnlineSearcher] No-import enabled but result is resolution-type (no direct url), falling back to import: ' + song.title);
+      songloft.log.info('[OnlineSearcher] no-import result requires host resolution, falling back to import');
     }
 
     // 同步导入到 songloft 数据库，直接拿到 songloft 分配的 id 和 url
     const imported = await this.importSong(song);
     if (!imported) {
-      songloft.log.error('[OnlineSearcher] Failed to import song, cannot play: ' + song.title);
+      songloft.log.error('[OnlineSearcher] import failed; playback unavailable');
       return false;
     }
 
@@ -340,7 +348,7 @@ export class OnlineSearcher {
         });
         const pidNum = Number(pid);
         if (!Number.isNaN(pidNum)) appendedPlaylistId = pidNum;
-      } catch (e) { songloft.log.warn(`[OnlineSearcher] 追加歌单失败: ${String(e)}`); }
+      } catch (e) { songloft.log.warn(`[OnlineSearcher] append playlist failed: ${safeErrorForLog(e)}`); }
     }
 
     // 已追加到目标歌单且提供了播放管理器：接管为完整歌单播放，从这首新歌
@@ -353,7 +361,7 @@ export class OnlineSearcher {
         const devCfg = devices.find((d) => d.device_id === deviceId);
         if (devCfg && devCfg.play_mode) playMode = devCfg.play_mode as PlayMode;
       } catch (e) {
-        songloft.log.warn('[OnlineSearcher] Failed to read play mode, fallback to order: ' + String(e));
+        songloft.log.warn('[OnlineSearcher] read play mode failed, fallback to order: ' + safeErrorForLog(e));
       }
 
       const ok = await pm.playPlaylistFromSong(appendedPlaylistId, imported.id, playMode);
@@ -365,7 +373,7 @@ export class OnlineSearcher {
             appendedPlaylistId,
           );
         }
-        songloft.log.info(`[OnlineSearcher] Playing online song via playlist ${appendedPlaylistId} (auto-continue): ${song.title} - ${song.artist}`);
+        songloft.log.info(`[OnlineSearcher] playlist playback started playlist_id=${appendedPlaylistId} auto_continue=true`);
         return true;
       }
       songloft.log.warn(`[OnlineSearcher] Playlist takeover failed for playlist ${appendedPlaylistId}, falling back to single URL push`);
@@ -374,21 +382,24 @@ export class OnlineSearcher {
     // 用返回的 url 构造完整播放 URL（相对路径，URLBuilder 会拼接 server_host 和 token）。
     // 必须带上 force_mp3 / volume_normalize：直推路径漏了这些选项时，音箱会拿到不能解码的
     // 源格式流而亮灯不出声（songloft-org/songloft-plugin-miot#62）。
-    const playUrl = await URLBuilder.buildSongURL({ id: imported.id, url: imported.url }, playbackOptionsOf(config));
+    const playUrl = await URLBuilder.buildSongURL({
+      id: imported.id,
+      url: imported.url,
+      duration: song.duration,
+    }, playbackOptionsOf(config));
     if (!playUrl) {
       songloft.log.error('[OnlineSearcher] Failed to build URL for song id=' + imported.id);
       return false;
     }
 
     // 推送 URL 到音箱（传「歌名-歌手」供触屏歌词模式匹配曲库）
-    const songName = song.artist ? `${song.title}-${song.artist}` : song.title;
-    songloft.log.info('[OnlineSearcher] [Diag] Push to device: songName="' + songName + '" importedUrl="' + imported.url + '" playUrl="' + playUrl + '"');
+    songloft.log.info(`[OnlineSearcher] push imported song_id=${imported.id} title_length=${textLength(song.title)} artist_length=${textLength(song.artist)}`);
     const played = await minaService.playURL(accountId, deviceId, playUrl, {
       title: song.title,
       artist: song.artist,
     });
     if (!played) {
-      songloft.log.error('[OnlineSearcher] Failed to push URL to device: ' + playUrl);
+      songloft.log.error(`[OnlineSearcher] push failed song_id=${imported.id}`);
       return false;
     }
 
@@ -406,7 +417,7 @@ export class OnlineSearcher {
       );
     }
 
-    songloft.log.info('[OnlineSearcher] Playing online song: ' + song.title + ' - ' + song.artist + ' url=' + playUrl);
+    songloft.log.info(`[OnlineSearcher] playback started song_id=${imported.id}`);
     return true;
   }
 
@@ -469,22 +480,22 @@ export class OnlineSearcher {
       try {
         result = JSON.parse(text) as RemoteSongsResponse;
       } catch {
-        songloft.log.warn('[OnlineSearcher] Failed to parse remote songs response: ' + text);
+        songloft.log.warn(`[OnlineSearcher] remote import response parse failed body_length=${text.length}`);
         // 导入失败（可能是 UNIQUE 约束冲突），尝试查找已存在的歌曲
         return await this.findExistingSong(song.title, song.artist);
       }
 
       if (!result.songs || result.songs.length === 0) {
-        songloft.log.warn('[OnlineSearcher] Remote import returned no songs: ' + text);
+        songloft.log.warn(`[OnlineSearcher] remote import returned no songs body_length=${text.length}`);
         // 导入失败，尝试查找已存在的歌曲
         return await this.findExistingSong(song.title, song.artist);
       }
 
       const imported = result.songs[0];
-      songloft.log.info('[OnlineSearcher] Import success: ' + song.title + ' - ' + song.artist + ', songloft id=' + imported.id);
+      songloft.log.info(`[OnlineSearcher] import success song_id=${imported.id}`);
       return { id: imported.id, url: imported.url };
     } catch (e: any) {
-      songloft.log.warn('[OnlineSearcher] Remote import fetch error: ' + String(e));
+      songloft.log.warn('[OnlineSearcher] remote import fetch error: ' + safeErrorForLog(e));
       return null;
     }
   }
@@ -507,11 +518,11 @@ export class OnlineSearcher {
         (s.type === 'remote' || s.url?.startsWith('http'))
       );
       if (match && match.id && match.url) {
-        songloft.log.info('[OnlineSearcher] Found existing remote song: ' + title + ' - ' + artist + ', id=' + match.id);
+        songloft.log.info(`[OnlineSearcher] found existing remote song_id=${match.id}`);
         return { id: match.id, url: match.url };
       }
     } catch (e) {
-      songloft.log.warn('[OnlineSearcher] Failed to search existing songs: ' + String(e));
+      songloft.log.warn('[OnlineSearcher] existing song lookup failed: ' + safeErrorForLog(e));
     }
     return null;
   }

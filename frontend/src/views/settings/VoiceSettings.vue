@@ -13,6 +13,7 @@ import {
   clearMemory,
   confirmAction,
   deleteWebhook,
+  loadConfig,
   loadConversationMessages,
   loadMemory,
   loadSearchProviders,
@@ -118,6 +119,7 @@ const commandTestBusy = ref(false);
 const aiTestQuery = ref('');
 const aiTestResult = ref('');
 const aiTestBusy = ref(false);
+const aiKeyDraft = ref('');
 const sourceTestQuery = ref('');
 const sourceTestResult = ref('');
 const selectedProviderId = ref('');
@@ -135,6 +137,7 @@ let conversationSocket: WebSocket | null = null;
 let conversationPoll: ReturnType<typeof setInterval> | null = null;
 
 function syncSourceDrafts(): void {
+  for (const key of Object.keys(sourceDrafts)) delete sourceDrafts[key];
   for (const source of Array.isArray(state.config.external_search_sources) ? state.config.external_search_sources : []) {
     sourceDrafts[source.id] = { ...source };
   }
@@ -467,12 +470,16 @@ async function addSource(): Promise<void> {
   newSourceUrl.value = '';
   newSourceToken.value = '';
   await saveConfig({ external_search_sources: sources });
+  await loadConfig();
+  syncSourceDrafts();
 }
 
 async function removeSource(id: string): Promise<void> {
   const sources = state.config.external_search_sources.filter((source) => source.id !== id);
   delete sourceDrafts[id];
   await saveConfig({ external_search_sources: sources });
+  await loadConfig();
+  syncSourceDrafts();
 }
 
 async function saveSources(): Promise<void> {
@@ -480,7 +487,17 @@ async function saveSources(): Promise<void> {
     ...(sourceDrafts[source.id] || source),
   }));
   await saveConfig({ external_search_sources: sources });
+  await loadConfig();
+  syncSourceDrafts();
   notify('外部搜索源已保存', 'success');
+}
+
+function clearSourceToken(id: string): void {
+  const source = sourceDrafts[id];
+  if (!source) return;
+  source.token = '';
+  source.has_token = false;
+  source.clear_token = true;
 }
 
 async function testSource(): Promise<void> {
@@ -491,21 +508,29 @@ async function testSource(): Promise<void> {
     return;
   }
   try {
-    let url = source.url;
-    if (!/^https?:\/\//i.test(url)) url = `${window.location.origin}${url}`;
-    const token = source.token.trim() || window.SongloftPlugin?.getAuthToken?.() || '';
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: token.startsWith('Bearer ') ? token : `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ keyword: sourceTestQuery.value.trim(), quality: '320k' }),
+    const result = await post<Record<string, unknown>>('/voice-commands/external-search-test', {
+      query: sourceTestQuery.value.trim(),
     });
-    sourceTestResult.value = JSON.stringify(await response.json(), null, 2);
+    sourceTestResult.value = JSON.stringify(result, null, 2);
   } catch (error) {
     sourceTestResult.value = messageOf(error);
   }
+}
+
+async function saveAIKey(): Promise<void> {
+  const value = aiKeyDraft.value.trim();
+  if (!value) return;
+  await saveConfig({ ai_config: { ...state.config.ai_config, api_key: value } });
+  aiKeyDraft.value = '';
+  state.config.ai_config.api_key = '';
+  state.config.ai_config.has_api_key = true;
+}
+
+async function clearAIKey(): Promise<void> {
+  await saveConfig({ ai_config: { ...state.config.ai_config, api_key: '', clear_api_key: true } });
+  aiKeyDraft.value = '';
+  state.config.ai_config.api_key = '';
+  state.config.ai_config.has_api_key = false;
 }
 
 async function refreshSearchProviders(): Promise<void> {
@@ -572,6 +597,7 @@ async function deleteMemoryRecord(id?: string): Promise<void> {
     </div>
     <div class="form-body">
       <h3 class="card-title">Webhook 回调</h3>
+      <p class="field-help">配置后，完整语音内容、设备标识和小爱回答会发送到该地址；请只使用你信任的服务。</p>
       <div class="inline-fields webhook-fields"><SlInput v-model="webhookName" placeholder="名称（可选）" aria-label="Webhook 名称" /><SlInput v-model="webhookUrl" placeholder="https://..." aria-label="Webhook URL" /><SlButton variant="filled" label="添加" @click="addHook" /></div>
       <div v-for="hook in state.webhooks" :key="hook.id" class="list-item"><div class="list-item-copy"><strong class="list-item-title">{{ hook.name || hook.url }}</strong><span class="list-item-subtitle">{{ hook.url }}</span></div><SlButton variant="icon" icon="delete" title="删除 Webhook" @click="removeHook(hook.id)" /></div>
     </div>
@@ -662,6 +688,7 @@ async function deleteMemoryRecord(id?: string): Promise<void> {
     <SettingRow title="启用外部搜索" :subtitle="state.config.voice_command_enabled ? '搜索源需要返回 topone 格式结果' : '需要先开启语音口令'"><SlSwitch :model-value="state.config.external_search_enabled" :disabled="!state.config.voice_command_enabled" @update:model-value="setExternalSearchEnabled" /></SettingRow>
     <div v-if="!state.config.voice_command_enabled" class="dependency-hint"><SlIcon name="warning" :size="18" /><span>需要先开启“语音口令”才能使用外部搜索。</span></div>
     <div class="form-body">
+      <p class="field-help">搜索关键词会发送到已启用的来源；绝对 URL 只有在你显式填写 Token 时才携带 Authorization。</p>
       <div class="field"><label class="field-label">搜索优先级</label><SlSelect :model-value="state.config.search_priority" :options="searchPriorityOptions" aria-label="搜索优先级" @update:model-value="saveConfig({ search_priority: $event as 'parallel' | 'local_first' | 'external_first' })" /></div>
       <div class="field-grid"><div class="field"><label class="field-label">超时（秒）</label><SlInput :model-value="externalSearchTimeout" type="number" aria-label="外部搜索超时" @update:model-value="externalSearchTimeout = $event" @change="saveConfig({ external_search_timeout: Math.max(3, Math.min(60, Number(externalSearchTimeout) || 6)) })" /></div><div class="field setting-field-control"><label class="field-label">不入库直接播放</label><SlSwitch :model-value="state.config.external_search_no_import" @update:model-value="setSwitch('external_search_no_import', $event)" /></div></div>
       <div class="field-grid"><div class="field setting-field-control"><label class="field-label">自动追加到歌单</label><SlSwitch :model-value="appendPlaylistEnabled" @update:model-value="setAppendPlaylistEnabled" /></div><div v-if="appendPlaylistEnabled" class="field"><label class="field-label">目标歌单</label><SlSelect :model-value="state.config.external_search_playlist_id" :options="playlistOptions" aria-label="目标歌单" @update:model-value="setAppendPlaylistId" /></div></div>
@@ -693,7 +720,8 @@ async function deleteMemoryRecord(id?: string): Promise<void> {
              WebF 不绘制 grid 容器，已在 style.css 把 .field-grid 改成 flex
              （songloft-org/songloft-plugin-miot#79）。 -->
         <div class="field-grid"><div class="field"><SlInput v-model="sourceDrafts[source.id].name" placeholder="显示名称" /></div><div class="field"><SlInput v-model="sourceDrafts[source.id].url" placeholder="接口地址" /></div></div>
-        <SlInput v-model="sourceDrafts[source.id].token" type="password" placeholder="Bearer Token（可选）" />
+        <SlInput v-model="sourceDrafts[source.id].token" type="password" :placeholder="sourceDrafts[source.id].has_token ? 'Token 已保存；留空保持不变' : 'Bearer Token（可选）'" />
+        <div v-if="sourceDrafts[source.id].has_token" class="field-actions"><SlButton variant="text" label="清除已保存 Token" icon="delete" @click="clearSourceToken(source.id)" /></div>
         <SettingRow title="启用此源"><SlSwitch v-model="sourceDrafts[source.id].enabled" /></SettingRow>
         <div class="field-actions"><SlButton variant="text" label="移除" icon="delete" @click="removeSource(source.id)" /></div>
       </div>
@@ -702,12 +730,12 @@ async function deleteMemoryRecord(id?: string): Promise<void> {
     </div>
   </SectionCard>
 
-  <SectionCard title="AI 口令分析" icon="auto_awesome" description="可选的 OpenAI 兼容接口，用于解析复杂自然语言口令。">
+  <SectionCard title="AI 口令分析" icon="auto_awesome" description="可选的 OpenAI 兼容接口；开启后用户语音文本会发送到你配置的模型服务。">
     <SettingRow title="启用 AI 分析" :subtitle="state.config.voice_command_enabled ? '规则和记忆未命中时再调用 AI' : '需要先开启语音口令'"><SlSwitch :model-value="!!state.config.ai_config.enabled" :disabled="!state.config.voice_command_enabled" @update:model-value="setAIEnabled" /></SettingRow>
     <div v-if="!state.config.voice_command_enabled" class="dependency-hint"><SlIcon name="warning" :size="18" /><span>需要先开启“语音口令”才能使用 AI 分析。</span></div>
     <div class="form-body">
       <div class="field"><label class="field-label">API 地址</label><SlInput :model-value="state.config.ai_config.api_url || ''" placeholder="https://api.example.com/v1" @update:model-value="state.config.ai_config.api_url = $event" @change="saveConfig({ ai_config: state.config.ai_config })" /></div>
-      <div class="field"><label class="field-label">API Key</label><SlInput :model-value="state.config.ai_config.api_key || ''" type="password" placeholder="sk-..." @update:model-value="state.config.ai_config.api_key = $event" @change="saveConfig({ ai_config: state.config.ai_config })" /></div>
+      <div class="field"><label class="field-label">API Key</label><SlInput v-model="aiKeyDraft" type="password" :placeholder="state.config.ai_config.has_api_key ? '密钥已保存；留空保持不变' : 'sk-...'" @change="saveAIKey" /><div v-if="state.config.ai_config.has_api_key" class="field-actions"><SlButton variant="text" label="清除已保存密钥" icon="delete" @click="clearAIKey" /></div></div>
       <div class="field-grid"><div class="field"><label class="field-label">模型</label><SlInput :model-value="state.config.ai_config.model || ''" placeholder="qwen-flash" @update:model-value="state.config.ai_config.model = $event" @change="saveConfig({ ai_config: state.config.ai_config })" /></div><div class="field"><label class="field-label">超时（秒）</label><SlInput :model-value="String(state.config.ai_config.timeout || 6)" type="number" @update:model-value="state.config.ai_config.timeout = Math.max(1, Math.min(30, Number($event) || 6))" @change="saveConfig({ ai_config: state.config.ai_config })" /></div></div>
       <div class="command-test-panel command-test-panel-inset"><strong>AI 分析测试</strong><div class="inline-fields"><SlInput v-model="aiTestQuery" placeholder="输入自然语言口令" @submit="testAI" /><SlButton variant="outlined" label="测试分析" icon="science" :disabled="aiTestBusy" @click="testAI" /></div><pre v-if="aiTestResult" class="result-pre">{{ aiTestResult }}</pre></div>
     </div>

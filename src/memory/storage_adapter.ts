@@ -6,6 +6,7 @@ import type {
   MemoryStoreSnapshot,
   MemoryStorageAdapter as MemoryStorageAdapterContract,
 } from './types';
+import { safeErrorForLog } from '../utils/safe_log';
 
 const MEMORY_STORAGE_KEY = 'memory:v1:records';
 
@@ -49,7 +50,7 @@ function parseSnapshot(raw: unknown): MemoryLoadResult {
   try {
     parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
   } catch (error) {
-    return { status: 'format_error', error: String(error) };
+    return { status: 'format_error', error: safeErrorForLog(error) };
   }
 
   if (!isObject(parsed) || parsed.version !== 1 || !Array.isArray(parsed.records)) {
@@ -80,7 +81,7 @@ export class SongloftStorageMemoryAdapter implements MemoryStorageAdapterContrac
       }
       return parseSnapshot(raw);
     } catch (error) {
-      return { status: 'read_error', error: String(error) };
+      return { status: 'read_error', error: safeErrorForLog(error) };
     }
   }
 
@@ -89,7 +90,7 @@ export class SongloftStorageMemoryAdapter implements MemoryStorageAdapterContrac
       await songloft.storage.set(MEMORY_STORAGE_KEY, JSON.stringify(snapshot));
       return true;
     } catch (error) {
-      songloft.log.warn('[MemoryStorage] save failed, memory update skipped: ' + String(error));
+      songloft.log.warn('[MemoryStorage] save failed, memory update skipped: ' + safeErrorForLog(error));
       return false;
     }
   }

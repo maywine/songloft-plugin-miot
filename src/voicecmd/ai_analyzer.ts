@@ -4,6 +4,7 @@
 /// <reference types="@songloft/plugin-sdk" />
 
 import type { AIConfig, AIAnalysisResult } from '../types';
+import { redactURLForLog, safeErrorForLog, textLength } from '../utils/safe_log';
 
 /** AI System Prompt */
 const AI_SYSTEM_PROMPT = `从指令中提取出操作和音乐信息，返回JSON：{"action":"...","params":{...},"confidence":"high|medium|low","rawText":"有效文本"}
@@ -64,7 +65,7 @@ export class AIAnalyzer {
     try {
       return await this.callAI(query, config);
     } catch (e) {
-      songloft.log.warn(`[AIAnalyzer] AI analysis failed: ${String(e)}`);
+      songloft.log.warn(`[AIAnalyzer] analysis failed: ${safeErrorForLog(e)}`);
       return null;
     }
   }
@@ -87,7 +88,7 @@ export class AIAnalyzer {
    * 调用 LLM API
    */
   private async callAI(query: string, config: AIConfig): Promise<AIAnalysisResult> {
-    songloft.log.info(`[AIAnalyzer] Calling ${config.api_url} model=${config.model} timeout=${config.timeout}s`);
+    songloft.log.info(`[AIAnalyzer] calling url=${redactURLForLog(config.api_url)} model=${config.model} timeout=${config.timeout}s query_length=${textLength(query)}`);
 
     const messages = [
       { role: 'system', content: AI_SYSTEM_PROMPT },
@@ -120,12 +121,13 @@ export class AIAnalyzer {
     try {
       resp = await Promise.race([fetchPromise, timeoutPromise]);
     } catch (e) {
-      songloft.log.warn(`[AIAnalyzer] fetch error: ${String(e)}`);
+      songloft.log.warn(`[AIAnalyzer] fetch error: ${safeErrorForLog(e)}`);
       throw e;
     }
 
     if (!resp.ok) {
-      throw new Error(`API error: ${resp.status} ${await resp.text()}`);
+      const errorBody = await resp.text();
+      throw new Error(`AI API error: status=${resp.status} body_length=${errorBody.length}`);
     }
 
     const data = await resp.json();
@@ -139,7 +141,7 @@ export class AIAnalyzer {
       songloft.log.warn(`[AIAnalyzer] Finish reason: ${finishReason} (content may be truncated)`);
     }
 
-    songloft.log.info(`[AIAnalyzer] API response: ${content.slice(0, 200)}`);
+    songloft.log.info(`[AIAnalyzer] response received content_length=${content.length}`);
     return this.parseResponse(content);
   }
 
@@ -163,7 +165,7 @@ export class AIAnalyzer {
         rawText: parsed.rawText || '',
       };
     } catch {
-      songloft.log.warn(`[AIAnalyzer] Direct JSON parse failed, content: ${content.slice(0, 300)}`);
+      songloft.log.warn(`[AIAnalyzer] direct JSON parse failed content_length=${content.length}`);
     }
 
     // 兜底：去掉思考标签后再提取 JSON
@@ -194,8 +196,8 @@ export class AIAnalyzer {
         rawText: parsed.rawText || '',
       };
     } catch {
-      songloft.log.warn(`[AIAnalyzer] Fallback JSON parse also failed, extracted: ${jsonStr.slice(0, 300)}`);
-      throw new Error(`Failed to parse AI response: ${jsonStr.slice(0, 100)}`);
+      songloft.log.warn(`[AIAnalyzer] fallback JSON parse failed extracted_length=${jsonStr.length}`);
+      throw new Error(`failed to parse AI response: extracted_length=${jsonStr.length}`);
     }
   }
 }

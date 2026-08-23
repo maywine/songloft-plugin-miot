@@ -6,6 +6,7 @@ import { CookieJar } from '../utils/cookie';
 import { fetchWithRedirects } from '../utils/http';
 import { MinaAuth } from '../mina/auth';
 import { generateDeviceId } from '../utils/crypto';
+import { opaqueID, safeErrorForLog, textLength } from '../utils/safe_log';
 import { ACCOUNT_BASE_URL, formatUserAgent, MINA_SID } from '../mina/constants';
 import type { XiaomiTokenInfo } from '../types';
 
@@ -158,7 +159,7 @@ export class QRCodeLogin {
       const code = Number(qrData['code'] || 0);
       if (code !== 0) {
         const desc = getStringValue(qrData, 'desc', 'unknown error');
-        console.log(`[qrcode] getQRCode: QR code request failed: code=${code}, desc=${desc}`);
+        console.log(`[qrcode] getQRCode: QR code request failed: code=${code}, desc_length=${textLength(desc)}`);
         return null;
       }
 
@@ -182,7 +183,7 @@ export class QRCodeLogin {
         loginUrl: loginUrl,
       };
     } catch (e: any) {
-      console.log(`[qrcode] getQRCode: error: ${e.message || e}`);
+      console.log(`[qrcode] getQRCode: error: ${safeErrorForLog(e)}`);
       this.updateState('failed');
       return null;
     }
@@ -279,7 +280,7 @@ export class QRCodeLogin {
       }
 
       // 扫码成功，进入确认状态
-      console.log(`[qrcode] poll: QR code login successful, userId=${userId}`);
+      console.log(`[qrcode] poll: QR code login successful, user=${opaqueID(userId)}`);
 
       // 使用 MinaAuth 交换目标服务的 serviceToken
       const tokenInfo = await this.exchangeToken(passToken, userId, cUserId);
@@ -297,7 +298,7 @@ export class QRCodeLogin {
       };
       return result;
     } catch (e: any) {
-      console.log(`[qrcode] poll: error: ${e.message || e}`);
+      console.log(`[qrcode] poll: error: ${safeErrorForLog(e)}`);
       this.updateState('failed');
       return { state: 'failed', message: `poll error: ${e.message || e}` };
     }
@@ -414,14 +415,14 @@ export class QRCodeLogin {
       const result = await auth.refreshByPassToken(passToken, userId, this.sid);
 
       if (result.state !== 'success' || !result.tokenInfo) {
-        console.log(`[qrcode] exchangeToken: failed: ${result.error || 'unknown error'}`);
+        console.log(`[qrcode] exchangeToken: failed: ${safeErrorForLog(result.error || 'unknown error')}`);
         return null;
       }
 
       console.log(`[qrcode] exchangeToken: successfully obtained ${this.sid} serviceToken`);
       return result.tokenInfo;
     } catch (e: any) {
-      console.log(`[qrcode] exchangeToken: error: ${e.message || e}`);
+      console.log(`[qrcode] exchangeToken: error: ${safeErrorForLog(e)}`);
       return null;
     }
   }

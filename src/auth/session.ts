@@ -29,7 +29,6 @@ export class LoginSession {
   state: SessionState = 'idle';
   accountId: string;
   username: string = '';
-  password: string = '';  // MD5后的
 
   // MinaAuth 实例（保持登录流程上下文，包括 CookieJar）
   auth: MinaAuth | null = null;
@@ -64,7 +63,6 @@ export class LoginSession {
   reset(): void {
     this.state = 'idle';
     this.username = '';
-    this.password = '';
     this.auth = null;
     this.sign = '';
     this.qs = '';

@@ -9,9 +9,11 @@ import { Scheduler } from '../schedule/scheduler';
 import { VoiceEngine } from '../voicecmd/engine';
 import { normalizeMemoryMaxRecords } from '../memory';
 import type { MemoryService } from '../memory';
-import { setHostBaseUrl, callHostAPI } from '../utils/http';
+import { setHostBaseUrl } from '../utils/http';
 import { setPollDebug } from '../utils/debug';
 import type { SearchPriority } from '../types';
+import { safeErrorForLog } from '../utils/safe_log';
+import { isHostPluginActive } from '../utils/host_security';
 
 const SEARCH_PRIORITIES: SearchPriority[] = ['parallel', 'local_first', 'external_first'];
 
@@ -75,6 +77,16 @@ export function registerConfigHandlers(
     try {
       const config = await configManager.getConfig();
       const aiConfig = await configManager.getAIConfig();
+      const safeAIConfig = {
+        ...aiConfig,
+        api_key: '',
+        has_api_key: !!aiConfig.api_key,
+      };
+      const safeSearchSources = (config.external_search_sources || []).map((source) => ({
+        ...source,
+        token: '',
+        has_token: !!source.token,
+      }));
 
       let suggestedAddresses: string[] = [];
       try {
@@ -97,8 +109,9 @@ export function registerConfigHandlers(
           song_transition_offset: config.song_transition_offset ?? 0,
           external_search_enabled: !!config.external_search_enabled,
           external_search_url: config.external_search_url || '',
-          external_search_token: config.external_search_token || '',
-          external_search_sources: config.external_search_sources || [],
+          external_search_token: '',
+          has_external_search_token: !!config.external_search_token,
+          external_search_sources: safeSearchSources,
           external_search_playlist_id: config.external_search_playlist_id ?? '',
           external_search_timeout: config.external_search_timeout ?? 6,
           external_search_no_import: !!config.external_search_no_import,
@@ -117,7 +130,7 @@ export function registerConfigHandlers(
           max_song_index: config.max_song_index ?? 10000,
           server_host_status: getServerHostStatus(config.server_host),
           suggested_addresses: suggestedAddresses,
-          ai_config: aiConfig,
+          ai_config: safeAIConfig,
           default_cover_id: config.default_cover_id,
           touchscreen_lyrics_enabled: !!config.touchscreen_lyrics_enabled,
         },
@@ -205,23 +218,38 @@ export function registerConfigHandlers(
         config.external_search_url = typeof body.external_search_url === 'string' ? body.external_search_url.trim() : '';
       }
 
-      // 更新 external_search_token
-      if (body.external_search_token !== undefined) {
-        config.external_search_token = typeof body.external_search_token === 'string' ? body.external_search_token.trim() : '';
+      // 外部搜索 Token 使用 write-only 语义：非空值覆盖；省略/空串保留；
+      // clear_external_search_token=true 才显式删除。
+      if (body.clear_external_search_token === true) {
+        config.external_search_token = '';
+      } else if (typeof body.external_search_token === 'string' && body.external_search_token.trim()) {
+        config.external_search_token = body.external_search_token.trim();
       }
 
       // 更新 external_search_sources（源列表，数组顺序即优先级）
       if (body.external_search_sources !== undefined) {
+        const existingSources = new Map(
+          (config.external_search_sources || []).map((source) => [source.id, source]),
+        );
         config.external_search_sources = Array.isArray(body.external_search_sources)
           ? body.external_search_sources
               .filter((s: any) => s && typeof s.url === 'string' && s.url.trim())
-              .map((s: any) => ({
-                id: (typeof s.id === 'string' && s.id) ? s.id : `src_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-                name: typeof s.name === 'string' ? s.name.trim() : '',
-                url: s.url.trim(),
-                token: typeof s.token === 'string' ? s.token.trim() : '',
-                enabled: s.enabled !== false,
-              }))
+              .map((s: any) => {
+                const id = (typeof s.id === 'string' && s.id)
+                  ? s.id
+                  : `src_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+                const newToken = typeof s.token === 'string' ? s.token.trim() : '';
+                const token = s.clear_token === true
+                  ? ''
+                  : (newToken || existingSources.get(id)?.token || '');
+                return {
+                  id,
+                  name: typeof s.name === 'string' ? s.name.trim() : '',
+                  url: s.url.trim(),
+                  token,
+                  enabled: s.enabled !== false,
+                };
+              })
           : [];
       }
 
@@ -343,8 +371,10 @@ export function registerConfigHandlers(
         if (typeof newAI.api_url === 'string') {
           aiConfig.api_url = newAI.api_url;
         }
-        if (typeof newAI.api_key === 'string') {
-          aiConfig.api_key = newAI.api_key;
+        if (newAI.clear_api_key === true) {
+          aiConfig.api_key = '';
+        } else if (typeof newAI.api_key === 'string' && newAI.api_key.trim()) {
+          aiConfig.api_key = newAI.api_key.trim();
         }
         if (typeof newAI.model === 'string') {
           aiConfig.model = newAI.model;
@@ -378,7 +408,7 @@ export function registerConfigHandlers(
           }
         } catch (e) {
           memoryWarning = '最大记忆数量已保存，但现有记忆暂时无法完成淘汰。';
-          songloft.log.warn('[MemoryConfig] trim failed: ' + String(e));
+          songloft.log.warn('[MemoryConfig] trim failed: ' + safeErrorForLog(e));
         }
       }
 
@@ -437,36 +467,27 @@ export function registerConfigHandlers(
         });
       }
     } catch (e) {
-      songloft.log.warn('[config] Failed to load registered search providers: ' + String(e));
+      songloft.log.warn('[config] Failed to load registered search providers: ' + safeErrorForLog(e));
     }
 
-    interface HostPlugin {
-      entry_path: string;
-      status: string;
-    }
-
-    let installedPlugins: HostPlugin[] = [];
-    try {
-      const data = await callHostAPI<{ plugins: HostPlugin[] }>('GET', '/api/v1/jsplugins/');
-      installedPlugins = data.plugins || [];
-    } catch (e) {
-      songloft.log.warn('[config] Failed to fetch plugin list: ' + String(e));
-    }
-
-    // 只返回真实安装（且已启用）的搜索提供方，过滤未安装的内置兜底项
-    const providers = Array.from(byEntryPath.values())
-      .map((p) => {
-        const found = installedPlugins.find((ip) => ip.entry_path === p.entryPath);
-        return {
-          id: p.entryPath,
-          name: p.name,
-          url: `/api/v1/jsplugin/${p.entryPath}${p.searchPath}`,
-          installed: !!found,
-          active: found?.status === 'active',
-          ...(p.icon ? { icon: p.icon } : {}),
-        };
-      })
-      .filter((p) => p.installed && p.active);
+    // 管理接口 /jsplugins 不应向 scoped 插件 Token 开放。逐项走最小化 bridge，
+    // 只查询一个 entryPath 的 active 布尔值，不暴露完整插件清单或管理字段。
+    const providers = (await Promise.all(Array.from(byEntryPath.values()).map(async (p) => {
+      let active = false;
+      try {
+        active = await isHostPluginActive(p.entryPath);
+      } catch (e) {
+        songloft.log.warn(`[config] Failed to check provider state entry=${p.entryPath}: ${safeErrorForLog(e)}`);
+      }
+      return {
+        id: p.entryPath,
+        name: p.name,
+        url: `/api/v1/jsplugin/${p.entryPath}${p.searchPath}`,
+        installed: active,
+        active,
+        ...(p.icon ? { icon: p.icon } : {}),
+      };
+    }))).filter((p) => p.active);
 
     return jsonResponse({ providers });
   });

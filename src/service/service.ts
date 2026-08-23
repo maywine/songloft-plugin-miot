@@ -11,6 +11,7 @@ import { MinaHTTPClient } from '../mina/client';
 import type { PlayMetadata } from '../mina/client';
 import { getTTSCommand, XIAOMI_IO_SID, LoginState } from '../mina/constants';
 import type { DeviceConfig, MinaDevice } from '../types';
+import { opaqueID, safeErrorForLog } from '../utils/safe_log';
 
 // ===== 导出类型 =====
 
@@ -65,7 +66,7 @@ export class MinaService {
 
     // 如果客户端不可用，回退到本地缓存
     if (!client) {
-      songloft.log.warn('[MinaService] No client for account, returning cached devices: ' + accountId);
+      songloft.log.warn('[MinaService] No client for account, returning cached devices: ' + opaqueID(accountId));
       return this.buildDeviceInfoFromLocal(accountId);
     }
 
@@ -73,7 +74,7 @@ export class MinaService {
     try {
       apiDevices = await client.getDeviceList();
     } catch (e) {
-      songloft.log.error('[MinaService] Failed to get device list from API: ' + String(e));
+      songloft.log.error('[MinaService] Failed to get device list from API: ' + safeErrorForLog(e));
       return this.buildDeviceInfoFromLocal(accountId);
     }
 
@@ -94,7 +95,7 @@ export class MinaService {
     try {
       await this.accountManager.updateDeviceList(accountId, apiDevices);
     } catch (e) {
-      songloft.log.error('[MinaService] Failed to update device list in config: ' + String(e));
+      songloft.log.error('[MinaService] Failed to update device list in config: ' + safeErrorForLog(e));
     }
 
     // 从已合并的本地配置中构建返回结果（包含presence在线状态）
@@ -110,7 +111,7 @@ export class MinaService {
   async playURL(accountId: string, deviceId: string, url: string, song?: string | PlayMetadata): Promise<boolean> {
     const client = this.getClient(accountId);
     if (!client) {
-      songloft.log.warn('[MinaService] playURL: no client for account: ' + accountId);
+      songloft.log.warn('[MinaService] playURL: no client for account: ' + opaqueID(accountId));
       return false;
     }
 
@@ -118,7 +119,7 @@ export class MinaService {
       // 播放前先暂停当前播放，防止小爱音箱出现两个声音叠加
       await client.playerPause(deviceId);
     } catch (e) {
-      songloft.log.warn('[MinaService] Pre-pause before play failed, continuing: ' + String(e));
+      songloft.log.warn('[MinaService] Pre-pause before play failed, continuing: ' + safeErrorForLog(e));
     }
 
     try {
@@ -134,7 +135,7 @@ export class MinaService {
           ? { enabled: lyricsEnabled, songName: song || '' }
           : { enabled: lyricsEnabled, metadata: song });
     } catch (e) {
-      songloft.log.error('[MinaService] playURL failed: ' + String(e));
+      songloft.log.error('[MinaService] playURL failed: ' + safeErrorForLog(e));
       return false;
     }
   }
@@ -145,14 +146,14 @@ export class MinaService {
   async stopPlay(accountId: string, deviceId: string): Promise<boolean> {
     const client = this.getClient(accountId);
     if (!client) {
-      songloft.log.warn('[MinaService] stopPlay: no client for account: ' + accountId);
+      songloft.log.warn('[MinaService] stopPlay: no client for account: ' + opaqueID(accountId));
       return false;
     }
 
     try {
       return await client.playerStop(deviceId);
     } catch (e) {
-      songloft.log.error('[MinaService] stopPlay failed: ' + String(e));
+      songloft.log.error('[MinaService] stopPlay failed: ' + safeErrorForLog(e));
       return false;
     }
   }
@@ -163,14 +164,14 @@ export class MinaService {
   async pausePlay(accountId: string, deviceId: string): Promise<boolean> {
     const client = this.getClient(accountId);
     if (!client) {
-      songloft.log.warn('[MinaService] pausePlay: no client for account: ' + accountId);
+      songloft.log.warn('[MinaService] pausePlay: no client for account: ' + opaqueID(accountId));
       return false;
     }
 
     try {
       return await client.playerPause(deviceId);
     } catch (e) {
-      songloft.log.error('[MinaService] pausePlay failed: ' + String(e));
+      songloft.log.error('[MinaService] pausePlay failed: ' + safeErrorForLog(e));
       return false;
     }
   }
@@ -182,14 +183,14 @@ export class MinaService {
   async pausePlayVerified(accountId: string, deviceId: string): Promise<'paused' | 'stopped' | 'failed'> {
     const client = this.getClient(accountId);
     if (!client) {
-      songloft.log.warn('[MinaService] pausePlayVerified: no client for account: ' + accountId);
+      songloft.log.warn('[MinaService] pausePlayVerified: no client for account: ' + opaqueID(accountId));
       return 'failed';
     }
 
     try {
       return await client.playerPauseVerified(deviceId);
     } catch (e) {
-      songloft.log.error('[MinaService] pausePlayVerified failed: ' + String(e));
+      songloft.log.error('[MinaService] pausePlayVerified failed: ' + safeErrorForLog(e));
       return 'failed';
     }
   }
@@ -200,14 +201,14 @@ export class MinaService {
   async resumePlay(accountId: string, deviceId: string): Promise<boolean> {
     const client = this.getClient(accountId);
     if (!client) {
-      songloft.log.warn('[MinaService] resumePlay: no client for account: ' + accountId);
+      songloft.log.warn('[MinaService] resumePlay: no client for account: ' + opaqueID(accountId));
       return false;
     }
 
     try {
       return await client.playerResume(deviceId);
     } catch (e) {
-      songloft.log.error('[MinaService] resumePlay failed: ' + String(e));
+      songloft.log.error('[MinaService] resumePlay failed: ' + safeErrorForLog(e));
       return false;
     }
   }
@@ -221,7 +222,7 @@ export class MinaService {
   async setVolume(accountId: string, deviceId: string, volume: number): Promise<boolean> {
     const client = this.getClient(accountId);
     if (!client) {
-      songloft.log.warn('[MinaService] setVolume: no client for account: ' + accountId);
+      songloft.log.warn('[MinaService] setVolume: no client for account: ' + opaqueID(accountId));
       return false;
     }
 
@@ -232,12 +233,12 @@ export class MinaService {
         try {
           await this.accountManager.updateDeviceConfig(accountId, deviceId, { volume });
         } catch (e) {
-          songloft.log.warn('[MinaService] Failed to save volume to config: ' + String(e));
+          songloft.log.warn('[MinaService] Failed to save volume to config: ' + safeErrorForLog(e));
         }
       }
       return ok;
     } catch (e) {
-      songloft.log.error('[MinaService] setVolume failed: ' + String(e));
+      songloft.log.error('[MinaService] setVolume failed: ' + safeErrorForLog(e));
       return false;
     }
   }
@@ -249,14 +250,14 @@ export class MinaService {
   async getVolume(accountId: string, deviceId: string): Promise<number> {
     const client = this.getClient(accountId);
     if (!client) {
-      songloft.log.warn('[MinaService] getVolume: no client for account: ' + accountId);
+      songloft.log.warn('[MinaService] getVolume: no client for account: ' + opaqueID(accountId));
       return -1;
     }
 
     try {
       return await client.getVolume(deviceId);
     } catch (e) {
-      songloft.log.error('[MinaService] getVolume failed: ' + String(e));
+      songloft.log.error('[MinaService] getVolume failed: ' + safeErrorForLog(e));
       return -1;
     }
   }
@@ -278,7 +279,7 @@ export class MinaService {
     try {
       await this.accountManager.updateDeviceConfig(accountId, deviceId, { volume });
     } catch (e) {
-      songloft.log.warn('[MinaService] Failed to save synced volume to config: ' + String(e));
+      songloft.log.warn('[MinaService] Failed to save synced volume to config: ' + safeErrorForLog(e));
     }
     return volume;
   }
@@ -291,7 +292,7 @@ export class MinaService {
   async textToSpeech(accountId: string, deviceId: string, text: string): Promise<boolean> {
     const client = this.getClient(accountId);
     if (!client) {
-      songloft.log.warn(`[MinaService] textToSpeech: no client account=${accountId} device=${deviceId} text_length=${text.length}`);
+      songloft.log.warn(`[MinaService] textToSpeech: no client account=${opaqueID(accountId)} device=${opaqueID(deviceId)} text_length=${text.length}`);
       return false;
     }
 
@@ -302,12 +303,12 @@ export class MinaService {
         await this.ensureXiaomiIOToken(accountId, client);
       }
 
-      songloft.log.info(`[MinaService] textToSpeech start account=${accountId} device=${deviceId} hardware=${identity.hardware || ''} miot_did=${identity.miotDID || ''} tts_command=${ttsCommand || ''} text_length=${text.length}`);
+      songloft.log.info(`[MinaService] textToSpeech start account=${opaqueID(accountId)} device=${opaqueID(deviceId)} hardware=${identity.hardware || ''} miot_did=${opaqueID(identity.miotDID)} tts_command=${ttsCommand || ''} text_length=${text.length}`);
       const ok = await client.textToSpeech(deviceId, text, identity);
-      songloft.log.info(`[MinaService] textToSpeech done account=${accountId} device=${deviceId} ok=${ok}`);
+      songloft.log.info(`[MinaService] textToSpeech done account=${opaqueID(accountId)} device=${opaqueID(deviceId)} ok=${ok}`);
       return ok;
     } catch (e) {
-      songloft.log.error(`[MinaService] textToSpeech failed account=${accountId} device=${deviceId}: ${String(e)}`);
+      songloft.log.error(`[MinaService] textToSpeech failed account=${opaqueID(accountId)} device=${opaqueID(deviceId)}: ${safeErrorForLog(e)}`);
       return false;
     }
   }
@@ -328,7 +329,7 @@ export class MinaService {
       await this.accountManager.updateDeviceConfig(accountId, deviceId, { managed });
       return true;
     } catch (e) {
-      songloft.log.error('[MinaService] updateManagedStatus failed: ' + String(e));
+      songloft.log.error('[MinaService] updateManagedStatus failed: ' + safeErrorForLog(e));
       return false;
     }
   }
@@ -350,7 +351,7 @@ export class MinaService {
       });
       return true;
     } catch (e) {
-      songloft.log.error('[MinaService] updateLastSelection failed: ' + String(e));
+      songloft.log.error('[MinaService] updateLastSelection failed: ' + safeErrorForLog(e));
       return false;
     }
   }
@@ -362,14 +363,14 @@ export class MinaService {
   async getPlayerStatus(accountId: string, deviceId: string): Promise<any> {
     const client = this.getClient(accountId);
     if (!client) {
-      songloft.log.warn('[MinaService] getPlayerStatus: no client for account: ' + accountId);
+      songloft.log.warn('[MinaService] getPlayerStatus: no client for account: ' + opaqueID(accountId));
       return null;
     }
 
     try {
       return await client.getPlayerStatus(deviceId);
     } catch (e) {
-      songloft.log.error('[MinaService] getPlayerStatus failed: ' + String(e));
+      songloft.log.error('[MinaService] getPlayerStatus failed: ' + safeErrorForLog(e));
       return null;
     }
   }
@@ -444,7 +445,7 @@ export class MinaService {
         }
       }
     } catch (e) {
-      songloft.log.warn('[MinaService] Failed to refresh device list for identity lookup: ' + String(e));
+      songloft.log.warn('[MinaService] Failed to refresh device list for identity lookup: ' + safeErrorForLog(e));
     }
 
     return { hardware: cachedHardware, miotDID: cachedMiotDID };
@@ -463,7 +464,7 @@ export class MinaService {
 
     const account = await this.accountManager.getAccount(accountId);
     if (!account) {
-      songloft.log.warn(`[MinaService] ensureXiaomiIOToken: account not found account=${accountId}`);
+      songloft.log.warn(`[MinaService] ensureXiaomiIOToken: account not found account=${opaqueID(accountId)}`);
       return false;
     }
 
@@ -475,15 +476,15 @@ export class MinaService {
     }
 
     if (!account.pass_token || !account.user_id) {
-      songloft.log.warn(`[MinaService] ensureXiaomiIOToken: no passToken/userId account=${accountId}`);
+      songloft.log.warn(`[MinaService] ensureXiaomiIOToken: no passToken/userId account=${opaqueID(accountId)}`);
       return false;
     }
 
-    songloft.log.info(`[MinaService] ensureXiaomiIOToken: exchanging passToken account=${accountId}`);
+    songloft.log.info(`[MinaService] ensureXiaomiIOToken: exchanging passToken account=${opaqueID(accountId)}`);
     const auth = new MinaAuth();
     const result = await auth.refreshByPassToken(account.pass_token, account.user_id, XIAOMI_IO_SID);
     if (result.state !== LoginState.SUCCESS || !result.tokenInfo?.services[XIAOMI_IO_SID]) {
-      songloft.log.warn(`[MinaService] ensureXiaomiIOToken: exchange failed account=${accountId} error=${result.error || ''}`);
+      songloft.log.warn(`[MinaService] ensureXiaomiIOToken: exchange failed account=${opaqueID(accountId)} error=${safeErrorForLog(result.error)}`);
       return false;
     }
 
@@ -493,7 +494,7 @@ export class MinaService {
     }
     client.updateTokenInfo(tokenInfo);
     await this.accountManager.setAccountLoggedIn(accountId, tokenInfo);
-    songloft.log.info(`[MinaService] ensureXiaomiIOToken: token ready account=${accountId}`);
+    songloft.log.info(`[MinaService] ensureXiaomiIOToken: token ready account=${opaqueID(accountId)}`);
     return true;
   }
 

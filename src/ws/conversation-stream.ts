@@ -15,6 +15,7 @@ import type { WebSocketRequest, InboundWebSocket } from '@songloft/plugin-sdk';
 import type { ConversationMonitor } from '../conversation/monitor';
 import { toConversationViewModel } from '../conversation/viewmodel';
 import type { ConversationMessage } from '../types';
+import { safeErrorForLog } from '../utils/safe_log';
 
 /** 前端约定的对话订阅 WebSocket 子路径（onWebSocket 收到的 req.path） */
 export const WS_CONVERSATION_PATH = '/conversation/ws';
@@ -45,7 +46,7 @@ function broadcast(frame: Record<string, any>): void {
   for (const socket of sockets) {
     if (socket.readyState !== socket.OPEN) continue;
     socket.send(json).catch((e: any) => {
-      songloft.log.warn('[ws/conversation] send failed: ' + String(e));
+      songloft.log.warn('[ws/conversation] send failed: ' + safeErrorForLog(e));
     });
   }
 }
@@ -113,6 +114,6 @@ function sendSnapshot(socket: InboundWebSocket, limit: number): void {
   if (!conversationMonitor || socket.readyState !== socket.OPEN) return;
   const messages = conversationMonitor.getMessages(limit, 0).map(toConversationViewModel);
   socket.send(JSON.stringify({ type: 'snapshot', data: messages, count: messages.length })).catch((e: any) => {
-    songloft.log.warn('[ws/conversation] snapshot send failed: ' + String(e));
+    songloft.log.warn('[ws/conversation] snapshot send failed: ' + safeErrorForLog(e));
   });
 }

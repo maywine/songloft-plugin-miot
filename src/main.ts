@@ -14,6 +14,7 @@ import { AIAnalyzer } from './voicecmd/ai_analyzer';
 import { getDefaultVoiceCommands } from './voicecmd/engine';
 import { IndexingManager } from './indexing/manager';
 import { MemoryService } from './memory';
+import { redactURLForLog, safeErrorForLog } from './utils/safe_log';
 
 // 导入所有handler注册函数
 import { registerAccountHandlers } from './handlers/account';
@@ -55,10 +56,10 @@ async function warnIfServerHostStale(serverHost: string): Promise<void> {
     const validAddrs = localAddrs.filter((addr): addr is string => typeof addr === 'string');
     const norm = (s: string) => s.trim().toLowerCase().replace(/\/$/, '');
     if (!validAddrs.some(a => norm(a) === norm(host))) {
-      songloft.log.warn('[URLBuilder] server_host=' + serverHost + ' 不在当前本机网卡地址中（' + validAddrs.join(', ') + '）；服务器可能已更换 IP 或音箱不在同一网段，音箱将无法访问，请在设置页重新选择地址');
+      songloft.log.warn('[URLBuilder] server_host=' + redactURLForLog(serverHost) + ' 不在当前本机网卡地址中（' + validAddrs.join(', ') + '）；服务器可能已更换 IP 或音箱不在同一网段，音箱将无法访问，请在设置页重新选择地址');
     }
   } catch (e) {
-    songloft.log.warn('[URLBuilder] server_host 失效自检失败（无法获取本机网卡地址）: ' + String(e));
+    songloft.log.warn('[URLBuilder] server_host 失效自检失败（无法获取本机网卡地址）: ' + safeErrorForLog(e));
   }
 }
 
@@ -99,7 +100,7 @@ async function onInit(): Promise<void> {
   const pluginConfig = await configManager.getConfig();
   if (pluginConfig.server_host) {
     setHostBaseUrl(pluginConfig.server_host);
-    songloft.log.info('音箱播放 URL 基础地址已设置: ' + pluginConfig.server_host);
+    songloft.log.info('音箱播放 URL 基础地址已设置: ' + redactURLForLog(pluginConfig.server_host));
     await warnIfServerHostStale(pluginConfig.server_host);
   }
 
@@ -150,7 +151,7 @@ async function onInit(): Promise<void> {
 
   // 自动登录 + 启动后台服务（异步，不阻塞插件初始化）
   authService.autoLoginAll().catch(e => {
-    songloft.log.error('autoLoginAll failed: ' + String(e));
+    songloft.log.error('autoLoginAll failed: ' + safeErrorForLog(e));
   });
   // 异步刷新索引，不阻塞插件初始化
   setTimeout(() => {
@@ -163,10 +164,10 @@ async function onInit(): Promise<void> {
         await indexingManager.waitForPlaylistCache(30_000);
       }
       await playlistManagerMap.restoreTempPlaylists(indexingManager).catch(e => {
-        songloft.log.warn('restoreTempPlaylists failed: ' + String(e));
+        songloft.log.warn('restoreTempPlaylists failed: ' + safeErrorForLog(e));
       });
     }).catch(e => {
-      songloft.log.error('indexingManager.refresh failed: ' + String(e));
+      songloft.log.error('indexingManager.refresh failed: ' + safeErrorForLog(e));
     });
   }, 100);
 
@@ -181,7 +182,7 @@ async function onInit(): Promise<void> {
   }
   if (pluginConfig.conversation_monitor_enabled) {
     conversationMonitor.start().catch(e => {
-      songloft.log.error('conversationMonitor.start failed: ' + String(e));
+      songloft.log.error('conversationMonitor.start failed: ' + safeErrorForLog(e));
     });
   }
   if (pluginConfig.voice_command_enabled) {

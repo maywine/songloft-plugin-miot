@@ -11,6 +11,7 @@
 
 import { getSetCookie, parseSetCookie } from '@songloft/plugin-sdk';
 import { CookieJar } from './cookie';
+import { safeErrorForLog } from './safe_log';
 
 /** fetch请求选项（扩展） */
 export interface FetchOptions {
@@ -251,7 +252,7 @@ export async function getHostAPIBaseUrl(): Promise<string> {
       return _hostAPIBaseUrl;
     }
   } catch (e) {
-    songloft.log.warn('[http] failed to get local host API URL, falling back to configured server_host: ' + String(e));
+    songloft.log.warn('[http] failed to get local host API URL, falling back to configured server_host: ' + safeErrorForLog(e));
   }
 
   if (_hostBaseUrl) {

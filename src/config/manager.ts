@@ -30,6 +30,19 @@ const STORAGE_KEY_SCHEDULE_LOGS = 'schedule_logs';
 const STORAGE_KEY_AI_CONFIG = 'ai_config';
 const STORAGE_KEY_SEARCH_PROVIDERS = 'search_provider_registry';
 const STORAGE_KEY_DEVICE_GROUPS = 'device_groups';
+const SECRET_KEY_ACCOUNTS = 'accounts-v1';
+const SECRET_KEY_CONFIG = 'config-v1';
+const SECRET_KEY_AI_CONFIG = 'ai-config-v1';
+
+interface AccountSecretMaterial {
+  pass_token: string;
+  services: AccountConfig['services'];
+}
+
+interface ConfigSecretMaterial {
+  external_search_token: string;
+  source_tokens: Record<string, string>;
+}
 
 /** 搜索源候选注册默认搜索子路径 */
 const DEFAULT_SEARCH_PATH = '/api/search/topone';
@@ -131,12 +144,25 @@ export class ConfigManager {
     await songloft.storage.set(key, JSON.stringify(value));
   }
 
+  private async loadSecret<T>(key: string, defaultValue: T): Promise<T> {
+    const value = await songloft.secrets.get(key);
+    if (value === null || value === undefined || value === '') return defaultValue;
+    if (typeof value === 'string') {
+      try { return JSON.parse(value) as T; } catch { return defaultValue; }
+    }
+    return value as T;
+  }
+
+  private async saveSecret<T>(key: string, value: T): Promise<void> {
+    await songloft.secrets.set(key, JSON.stringify(value));
+  }
+
   // ===== 全局配置 =====
 
   /** 获取插件全局配置（与默认值合并，确保新增字段有默认值） */
   async getConfig(): Promise<PluginConfig> {
     if (this.configCache === null) {
-      this.configCache = this.load<Partial<PluginConfig>>(STORAGE_KEY_CONFIG, {});
+      this.configCache = this.loadConfigWithSecrets();
     }
     const stored = await this.configCache;
     const merged = { ...defaultPluginConfig(), ...stored };
@@ -178,8 +204,49 @@ export class ConfigManager {
 
   /** 保存插件全局配置 */
   async saveConfig(config: PluginConfig): Promise<void> {
-    await this.save(STORAGE_KEY_CONFIG, config);
+    const sourceTokens: Record<string, string> = {};
+    for (const source of config.external_search_sources || []) {
+      if (source.id && source.token) sourceTokens[source.id] = source.token;
+    }
+    await this.saveSecret<ConfigSecretMaterial>(SECRET_KEY_CONFIG, {
+      external_search_token: config.external_search_token || '',
+      source_tokens: sourceTokens,
+    });
+    const publicConfig: PluginConfig = {
+      ...config,
+      external_search_token: '',
+      external_search_sources: (config.external_search_sources || []).map((source) => ({
+        ...source,
+        token: '',
+      })),
+    };
+    await this.save(STORAGE_KEY_CONFIG, publicConfig);
     this.configCache = Promise.resolve(config);
+  }
+
+  private async loadConfigWithSecrets(): Promise<Partial<PluginConfig>> {
+    const stored = await this.load<Partial<PluginConfig>>(STORAGE_KEY_CONFIG, {});
+    const secrets = await this.loadSecret<ConfigSecretMaterial>(SECRET_KEY_CONFIG, {
+      external_search_token: '',
+      source_tokens: {},
+    });
+    let needsMigration = !!stored.external_search_token;
+    const sources = Array.isArray(stored.external_search_sources)
+      ? stored.external_search_sources.map((source) => {
+          if (source.token) needsMigration = true;
+          return {
+            ...source,
+            token: source.token || secrets.source_tokens[source.id] || '',
+          };
+        })
+      : [];
+    const merged = {
+      ...stored,
+      external_search_token: stored.external_search_token || secrets.external_search_token || '',
+      external_search_sources: sources,
+    } as PluginConfig;
+    if (needsMigration) await this.saveConfig({ ...defaultPluginConfig(), ...merged });
+    return merged;
   }
 
   // ===== 账号管理（存储层） =====
@@ -187,15 +254,51 @@ export class ConfigManager {
   /** 获取所有账号配置 */
   async getAccounts(): Promise<AccountConfig[]> {
     if (this.accountsCache === null) {
-      this.accountsCache = this.load<AccountConfig[]>(STORAGE_KEY_ACCOUNTS, []);
+      this.accountsCache = this.loadAccountsWithSecrets();
     }
     return this.accountsCache;
   }
 
   /** 保存所有账号配置 */
   async saveAccounts(accounts: AccountConfig[]): Promise<void> {
-    await this.save(STORAGE_KEY_ACCOUNTS, accounts);
+    const secrets: Record<string, AccountSecretMaterial> = {};
+    const publicAccounts = accounts.map((account) => {
+      secrets[account.id] = {
+        pass_token: account.pass_token || '',
+        services: account.services || {},
+      };
+      return {
+        ...account,
+        password: '',
+        pass_token: '',
+        services: {},
+      };
+    });
+    await this.saveSecret(SECRET_KEY_ACCOUNTS, secrets);
+    await this.save(STORAGE_KEY_ACCOUNTS, publicAccounts);
     this.accountsCache = Promise.resolve(accounts);
+  }
+
+  private async loadAccountsWithSecrets(): Promise<AccountConfig[]> {
+    const stored = await this.load<AccountConfig[]>(STORAGE_KEY_ACCOUNTS, []);
+    const secrets = await this.loadSecret<Record<string, AccountSecretMaterial>>(SECRET_KEY_ACCOUNTS, {});
+    let needsMigration = false;
+    const merged = stored.map((account) => {
+      if (account.password || account.pass_token || Object.keys(account.services || {}).length > 0) {
+        needsMigration = true;
+      }
+      const secret = secrets[account.id];
+      return {
+        ...account,
+        password: '',
+        pass_token: account.pass_token || secret?.pass_token || '',
+        services: Object.keys(account.services || {}).length > 0
+          ? account.services
+          : (secret?.services || {}),
+      };
+    });
+    if (needsMigration) await this.saveAccounts(merged);
+    return merged;
   }
 
   /** 按ID获取单个账号配置 */
@@ -360,12 +463,17 @@ export class ConfigManager {
 
   /** 获取 AI 配置 */
   async getAIConfig(): Promise<AIConfig> {
-    return this.load<AIConfig>(STORAGE_KEY_AI_CONFIG, defaultAIConfig());
+    const stored = await this.load<AIConfig>(STORAGE_KEY_AI_CONFIG, defaultAIConfig());
+    const secret = await this.loadSecret<{ api_key: string }>(SECRET_KEY_AI_CONFIG, { api_key: '' });
+    const merged = { ...defaultAIConfig(), ...stored, api_key: stored.api_key || secret.api_key || '' };
+    if (stored.api_key) await this.saveAIConfig(merged);
+    return merged;
   }
 
   /** 保存 AI 配置 */
   async saveAIConfig(config: AIConfig): Promise<void> {
-    await this.save(STORAGE_KEY_AI_CONFIG, config);
+    await this.saveSecret(SECRET_KEY_AI_CONFIG, { api_key: config.api_key || '' });
+    await this.save(STORAGE_KEY_AI_CONFIG, { ...config, api_key: '' });
   }
 
   // ===== 定时任务 =====

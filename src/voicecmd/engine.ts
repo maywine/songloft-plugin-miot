@@ -16,6 +16,7 @@ import { OnlineSearcher } from './online_searcher';
 import { updateDeviceStatusCache } from '../handlers/playlist';
 import { callHostAPI, getHostAPIBaseUrl } from '../utils/http';
 import { findFavoritesPlaylist } from '../utils/favorites';
+import { opaqueID, redactURLForLog, safeErrorForLog, textLength } from '../utils/safe_log';
 import { MemoryService } from '../memory';
 import { SleepTimer, parseTimeDuration, parseSongsCount, detectSleepTimerMode, formatRemaining } from '../sleep_timer';
 import type { PlaylistManager } from '../player/manager';
@@ -234,6 +235,25 @@ export class VoiceEngine {
     songloft.log.info(`[VoiceEngine] ${enabled ? 'Enabled' : 'Disabled'}`);
   }
 
+  /**
+   * 设置页外部搜索连通性测试。调用真实的后端搜索链，但只返回非敏感摘要，
+   * 不把直链、source_data、歌词或第三方响应原文带回浏览器。
+   */
+  async testExternalSearch(query: string): Promise<Record<string, unknown>> {
+    const result = await this.onlineSearcher.search(query, null);
+    if (!result) return { found: false };
+    return {
+      found: true,
+      title: result.title,
+      artist: result.artist,
+      album: result.album || '',
+      duration: result.duration || 0,
+      has_url: !!result.url,
+      has_provider_data: !!result.source_data,
+      provider_entry_path: result.plugin_entry_path || '',
+    };
+  }
+
   /** 是否已启用 */
   isEnabled(): boolean {
     return this.enabled;
@@ -296,17 +316,17 @@ export class VoiceEngine {
     // 找到设备对应的 accountId
     const accountId = await this.findAccountForDevice(msg.device_id);
     if (!accountId) {
-      songloft.log.warn(`[VoiceEngine] No account found for device: ${msg.device_id}`);
+      songloft.log.warn(`[VoiceEngine] no account found device=${opaqueID(msg.device_id)}`);
       return;
     }
 
     // 固定控制命令优先，避免 memory 或 AI 覆盖切歌、停止、音量、播放模式等操作。
     // matchCommand 使用最长关键词匹配，能正确区分 "停止播放" vs "小时后停止播放"(sleep_timer)；
     // matchBuiltinStopCommand 仅作兜底（用户禁用 stop 口令时仍保证能停止）。
-    songloft.log.info(`[VoiceEngine] [Rule] Matching fixed control query="${query}"`);
+    songloft.log.info(`[VoiceEngine] rule matching fixed control query_length=${textLength(query)}`);
     const fixedResult = await this.matchCommand(query, FIXED_CONTROL_COMMAND_TYPES) ?? this.matchBuiltinStopCommand(query);
     if (fixedResult) {
-      songloft.log.info(`[VoiceEngine] [Rule] → Matched fixed control: type=${fixedResult.command.type} keyword="${fixedResult.keyword}" argument="${fixedResult.argument}"`);
+      songloft.log.info(`[VoiceEngine] rule matched fixed control type=${fixedResult.command.type} keyword_length=${textLength(fixedResult.keyword)} argument_length=${textLength(fixedResult.argument)}`);
       await this.executeCommand(fixedResult, accountId, msg.device_id, query);
       return;
     }
@@ -326,14 +346,14 @@ export class VoiceEngine {
       }
     } catch (error) {
       memoryEnabled = false;
-      songloft.log.warn('[VoiceMemoryV2] error fallback stage="config_or_memory" error="' + String(error) + '"');
+      songloft.log.warn('[VoiceMemoryV2] error fallback stage=config_or_memory error=' + safeErrorForLog(error));
     }
 
     // 歌曲/歌单规则匹配
-    songloft.log.info(`[VoiceEngine] [Rule] Matching search query="${query}"`);
+    songloft.log.info(`[VoiceEngine] rule matching search query_length=${textLength(query)}`);
     const result = await this.matchCommand(query, SEARCH_COMMAND_TYPES);
     if (result) {
-      songloft.log.info(`[VoiceEngine] [Rule] → Matched search: type=${result.command.type} keyword="${result.keyword}" argument="${result.argument}"`);
+      songloft.log.info(`[VoiceEngine] rule matched search type=${result.command.type} keyword_length=${textLength(result.keyword)} argument_length=${textLength(result.argument)}`);
 
       // 执行口令
       const playedSong = await this.executeCommand(result, accountId, msg.device_id);
@@ -348,10 +368,10 @@ export class VoiceEngine {
     // AI 兜底（如果启用）
     const aiConfig = await this.configManager.getAIConfig();
     if (aiConfig.enabled) {
-      songloft.log.info(`[VoiceEngine] [AI] Analyzing query="${query}"`);
+      songloft.log.info(`[VoiceEngine] AI analyzing query_length=${textLength(query)}`);
       const aiResult = await this.aiAnalyzer.analyze(query, aiConfig);
       if (aiResult) {
-        songloft.log.info(`[VoiceEngine] [AI] Done: action=${aiResult.action} confidence=${aiResult.confidence} params=${JSON.stringify(aiResult.params)}`);
+        songloft.log.info(`[VoiceEngine] AI done action=${aiResult.action} confidence=${aiResult.confidence}`);
         if (aiResult.confidence !== 'low' && aiResult.action !== 'unknown') {
           songloft.log.info(`[VoiceEngine] [AI] → Executing fallback (high confidence, action=${aiResult.action})`);
           const playedSong = await this.executeAIResult(aiResult, accountId, msg.device_id);
@@ -390,7 +410,7 @@ export class VoiceEngine {
     try {
       await this.ensureMemoryInitialized();
       if (!this.memoryInitialized) {
-        songloft.log.info(`[VoiceMemoryV2] miss query="${query}" reason="memory_not_initialized"`);
+        songloft.log.info(`[VoiceMemoryV2] miss query_length=${textLength(query)} reason=memory_not_initialized`);
         return false;
       }
 
@@ -401,18 +421,18 @@ export class VoiceEngine {
       let reason = 'v1_normalized_query';
 
       if (record) {
-        songloft.log.info(`[VoiceMemoryV2] exact_hit query="${query}" id="${record.id}"`);
+        songloft.log.info(`[VoiceMemoryV2] exact_hit query_length=${textLength(query)} id=${record.id}`);
       } else {
         const resolved = this.memoryService.resolveEntity(query);
         if (resolved.status === 'ambiguous') {
-          songloft.log.info(`[VoiceMemoryV2] ambiguous query="${query}" candidates=${resolved.candidateCount ?? 0} reason="${resolved.reason || 'ambiguous'}"`);
+          songloft.log.info(`[VoiceMemoryV2] ambiguous query_length=${textLength(query)} candidates=${resolved.candidateCount ?? 0} reason=${resolved.reason || 'ambiguous'}`);
           void this.memoryService.recordAmbiguity(query, resolved).catch(error => {
-            songloft.log.warn('[VoiceMemoryV3] error fallback stage="record_ambiguous" error="' + String(error) + '"');
+            songloft.log.warn('[VoiceMemoryV3] error fallback stage=record_ambiguous error=' + safeErrorForLog(error));
           });
           return false;
         }
         if (resolved.status !== 'entity_hit' || !resolved.record) {
-          songloft.log.info(`[VoiceMemoryV2] miss query="${query}" reason="${resolved.reason || 'no_candidate'}" score=${(resolved.score ?? 0).toFixed(2)}`);
+          songloft.log.info(`[VoiceMemoryV2] miss query_length=${textLength(query)} reason=${resolved.reason || 'no_candidate'} score=${(resolved.score ?? 0).toFixed(2)}`);
           return false;
         }
         record = resolved.record;
@@ -423,21 +443,21 @@ export class VoiceEngine {
       }
 
       if (record.type !== 'play_song') {
-        songloft.log.info(`[VoiceMemoryV2] miss query="${query}" reason="unsupported_type_${record.type}"`);
+        songloft.log.info(`[VoiceMemoryV2] miss query_length=${textLength(query)} reason=unsupported_type_${record.type}`);
         return false;
       }
 
       const playedSong = await this.executeMemorySong(record, query, accountId, deviceId);
       if (!playedSong) {
         void this.memoryService.recordFailure(query, record.id).catch(error => {
-          songloft.log.warn('[VoiceMemoryV2] error fallback stage="record_failure" error="' + String(error) + '"');
+          songloft.log.warn('[VoiceMemoryV2] error fallback stage=record_failure error=' + safeErrorForLog(error));
         });
-        songloft.log.warn(`[VoiceMemoryV2] fallback query="${query}" reason="play_failed" id="${record.id}"`);
+        songloft.log.warn(`[VoiceMemoryV2] fallback query_length=${textLength(query)} reason=play_failed id=${record.id}`);
         return false;
       }
 
       if (matchMode === 'entity_hit') {
-        songloft.log.info(`[VoiceMemoryV2] entity_hit query="${query}" song="${playedSong.songName}" artist="${playedSong.artist}" score=${(score ?? 0).toFixed(2)} reason="${reason}" canonicalKey="${canonicalKey || ''}"`);
+        songloft.log.info(`[VoiceMemoryV2] entity_hit query_length=${textLength(query)} song_id=${playedSong.songId} score=${(score ?? 0).toFixed(2)} reason=${reason} canonical_key_present=${!!canonicalKey}`);
         this.queueMemorySuccess(query, playedSong, record.id, reason);
       } else {
         if (record.recordVersion !== 2 || !record.canonicalKey) {
@@ -448,7 +468,7 @@ export class VoiceEngine {
       }
       return true;
     } catch (error) {
-      songloft.log.warn('[VoiceMemoryV2] error fallback stage="play" error="' + String(error) + '"');
+      songloft.log.warn('[VoiceMemoryV2] error fallback stage=play error=' + safeErrorForLog(error));
       return false;
     }
   }
@@ -495,7 +515,7 @@ export class VoiceEngine {
           artist: standalone.artist,
         } : null;
       } catch (error) {
-        songloft.log.warn('[VoiceMemory] error fallback: get song by id failed: ' + String(error));
+        songloft.log.warn('[VoiceMemory] error fallback: get song by id failed: ' + safeErrorForLog(error));
         return null;
       }
     }
@@ -510,7 +530,7 @@ export class VoiceEngine {
   }
 
   private queueMemorySuccess(query: string, song: PlayedSong, matchedRecordId?: string, memoryHitReason?: string): void {
-    songloft.log.info(`[VoiceMemoryV2] lazy_migrate queued query="${query}" song="${song.songName}"`);
+    songloft.log.info(`[VoiceMemoryV2] lazy_migrate queued query_length=${textLength(query)} song_id=${song.songId}`);
     void this.memoryService.recordSuccess({
       query,
       type: 'play_song',
@@ -524,12 +544,12 @@ export class VoiceEngine {
       memoryHitReason,
     }).then(saved => {
       if (saved) {
-        songloft.log.info(`[VoiceMemoryV2] lazy_migrate done query="${query}"`);
+        songloft.log.info(`[VoiceMemoryV2] lazy_migrate done query_length=${textLength(query)}`);
       } else {
-        songloft.log.warn(`[VoiceMemoryV2] lazy_migrate failed query="${query}" reason="save_returned_false"`);
+        songloft.log.warn(`[VoiceMemoryV2] lazy_migrate failed query_length=${textLength(query)} reason=save_returned_false`);
       }
     }).catch(error => {
-      songloft.log.warn(`[VoiceMemoryV2] error fallback stage="record_success" error="${String(error)}"`);
+      songloft.log.warn(`[VoiceMemoryV2] error fallback stage=record_success error=${safeErrorForLog(error)}`);
     });
   }
 
@@ -541,7 +561,7 @@ export class VoiceEngine {
     try {
       await this.minaService.stopPlay(accountId, deviceId);
     } catch (e) {
-      songloft.log.warn('[VoiceMemory] error fallback: failed to interrupt broadcast: ' + String(e));
+      songloft.log.warn('[VoiceMemory] error fallback: failed to interrupt broadcast: ' + safeErrorForLog(e));
     }
 
     return pm;
@@ -559,7 +579,7 @@ export class VoiceEngine {
   async testCommand(query: string, deviceId: string, accountId?: string): Promise<CommandTestResult> {
     const testStart = Date.now();
     const q = (query || '').trim();
-    songloft.log.info(`[VoiceEngine] [Test] start query="${q}" deviceId=${deviceId}`);
+    songloft.log.info(`[VoiceEngine] test start query_length=${textLength(q)} device=${opaqueID(deviceId)}`);
     if (!q) {
       return { matched: false, source: 'none', executed: false, note: '查询为空' };
     }
@@ -611,7 +631,7 @@ export class VoiceEngine {
   private async testRule(query: string, accountId: string, deviceId: string): Promise<CommandTestResult> {
     const ruleStart = Date.now();
     const result = await this.matchCommand(query);
-    songloft.log.info(`[VoiceEngine] [Test] rule match done in ${Date.now() - ruleStart}ms → ${result ? `type=${result.command.type} keyword="${result.keyword}" argument="${result.argument}"` : 'no match'}`);
+    songloft.log.info(`[VoiceEngine] test rule match dur_ms=${Date.now() - ruleStart} matched=${!!result} type=${result?.command.type || 'none'} keyword_length=${textLength(result?.keyword)} argument_length=${textLength(result?.argument)}`);
     if (!result) {
       return { matched: false, source: 'rule', executed: false, note: '未匹配到任何口令' };
     }
@@ -874,7 +894,7 @@ export class VoiceEngine {
    * 执行 AI 分析结果
    */
   private async executeAIResult(result: AIAnalysisResult, accountId: string, deviceId: string): Promise<PlayedSong | null> {
-    songloft.log.info(`[VoiceEngine] [AI] Executing action=${result.action} params=${JSON.stringify(result.params)}`);
+    songloft.log.info(`[VoiceEngine] AI executing action=${result.action}`);
     const pm = this.playlistManagerMap.get(accountId, deviceId);
     const wasPlaying = pm?.isPlaying() ?? false;
     let playedSong: PlayedSong | null = null;
@@ -1011,18 +1031,18 @@ export class VoiceEngine {
         return;
       }
       playlistName = playlists[0].name;
-      songloft.log.info(`[VoiceEngine] No name specified, using default playlist: ${playlistName}`);
+      songloft.log.info(`[VoiceEngine] no name specified, using default playlist name_length=${textLength(playlistName)}`);
     }
 
     // 模糊匹配歌单（miss 时按需刷新索引，捡回运行期间新建的歌单 #84）
     const matchedPlaylist = await this.indexingManager.findPlaylistByNameWithRefresh(playlistName);
     if (!matchedPlaylist) {
-      songloft.log.warn(`[VoiceEngine] Playlist not found: ${playlistName}`);
+      songloft.log.warn(`[VoiceEngine] playlist not found name_length=${textLength(playlistName)}`);
       await this.minaService.textToSpeech(accountId, deviceId, `未找到歌单：${playlistName}`);
       return;
     }
 
-    songloft.log.info(`[VoiceEngine] Matched playlist: ${matchedPlaylist.name} (id=${matchedPlaylist.id})`);
+    songloft.log.info(`[VoiceEngine] matched playlist id=${matchedPlaylist.id}`);
 
     // 获取设备配置中的播放模式和起始位置
     let startIndex = 0;
@@ -1043,7 +1063,7 @@ export class VoiceEngine {
     // 播放歌单
     const ok = await pm.play(matchedPlaylist.id, startIndex, playMode);
     if (ok) {
-      songloft.log.info(`[VoiceEngine] Play playlist success: ${matchedPlaylist.name} index=${startIndex} mode=${playMode}`);
+      songloft.log.info(`[VoiceEngine] play playlist success id=${matchedPlaylist.id} index=${startIndex} mode=${playMode}`);
       return;
     }
 
@@ -1054,18 +1074,18 @@ export class VoiceEngine {
       // 用已匹配到的规范歌单名精确重查（比原始模糊查询更稳，能命中改了 ID 的同名歌单）
       const newPlaylist = this.indexingManager.findPlaylistByName(matchedPlaylist.name);
       if (newPlaylist) {
-        songloft.log.info(`[VoiceEngine] Re-matched playlist after refresh: ${newPlaylist.name} (id=${newPlaylist.id})`);
+        songloft.log.info(`[VoiceEngine] re-matched playlist after refresh id=${newPlaylist.id}`);
         const retryOk = await pm.play(newPlaylist.id, 0, playMode);
         if (retryOk) {
-          songloft.log.info(`[VoiceEngine] Retry play playlist success: ${newPlaylist.name}`);
+          songloft.log.info(`[VoiceEngine] retry play playlist success id=${newPlaylist.id}`);
           return;
         }
       }
-      songloft.log.error(`[VoiceEngine] Retry play playlist failed after index refresh: ${playlistName}`);
+      songloft.log.error(`[VoiceEngine] retry play playlist failed name_length=${textLength(playlistName)}`);
       return;
     }
 
-    songloft.log.error(`[VoiceEngine] Play playlist failed: ${matchedPlaylist.name}`);
+    songloft.log.error(`[VoiceEngine] play playlist failed id=${matchedPlaylist.id}`);
   }
 
   /**
@@ -1098,7 +1118,7 @@ export class VoiceEngine {
     try {
       await this.minaService.stopPlay(accountId, deviceId);
     } catch (e) {
-      songloft.log.warn('[VoiceEngine] Failed to interrupt broadcast: ' + String(e));
+      songloft.log.warn('[VoiceEngine] failed to interrupt broadcast: ' + safeErrorForLog(e));
     }
 
     const config = await this.configManager.getConfig();
@@ -1107,7 +1127,7 @@ export class VoiceEngine {
     // warn 级：这是搜歌链路的入口锚点。插件日志默认都是 info，而宿主 log level 常被设为
     // error/warn，导出的日志连一条插件记录都没有，问题完全不可定位
     // （songloft-org/songloft-plugin-miot#62 的排查就卡在这）。
-    songloft.log.warn(`[VoiceEngine] Play song priority=${priority} keyword="${songName}" localTerm="${searchTerm}"`);
+    songloft.log.warn(`[VoiceEngine] play song priority=${priority} song_name_length=${textLength(songName)} search_term_length=${textLength(searchTerm)}`);
 
     // 搜索提示 TTS 与搜歌并行执行
     const ttsHintEnabled = config.interrupt_tts_hint_enabled;
@@ -1140,7 +1160,7 @@ export class VoiceEngine {
         await this.minaService.textToSpeech(accountId, deviceId, ttsHintText);
         songloft.log.info(`[VoiceEngine] Parallel TTS done in ${Date.now() - parallelStart}ms`);
       } catch (e) {
-        songloft.log.warn('[VoiceEngine] Failed to play TTS hint: ' + String(e));
+        songloft.log.warn('[VoiceEngine] failed to play TTS hint: ' + safeErrorForLog(e));
       }
     };
 
@@ -1151,7 +1171,7 @@ export class VoiceEngine {
       return playedSong;
     }
 
-    songloft.log.warn(`[VoiceEngine] Song not found or failed to play: ${songName}`);
+    songloft.log.warn(`[VoiceEngine] song not found or failed song_name_length=${textLength(songName)}`);
     await this.minaService.textToSpeech(accountId, deviceId, `未找到歌曲：${songName}`);
     return null;
   }
@@ -1177,7 +1197,7 @@ export class VoiceEngine {
     try {
       await this.minaService.stopPlay(accountId, deviceId);
     } catch (e) {
-      songloft.log.warn('[VoiceEngine] Failed to interrupt broadcast: ' + String(e));
+      songloft.log.warn('[VoiceEngine] failed to interrupt broadcast: ' + safeErrorForLog(e));
     }
 
     if (!(await this.indexingManager.waitForReady(INDEX_READY_WAIT_MS))) {
@@ -1192,12 +1212,12 @@ export class VoiceEngine {
 
     const artistLocs = this.indexingManager.findSongsByArtist(cleanArtist);
     if (artistLocs.length === 0) {
-      songloft.log.warn(`[VoiceEngine] No songs found for artist: ${cleanArtist} (playlistCacheReady=${this.indexingManager.isPlaylistCacheReady()})`);
+      songloft.log.warn(`[VoiceEngine] no songs found artist_length=${textLength(cleanArtist)} playlist_cache_ready=${this.indexingManager.isPlaylistCacheReady()}`);
       await this.minaService.textToSpeech(accountId, deviceId, `未找到歌手${cleanArtist}的歌曲`);
       return null;
     }
 
-    songloft.log.info(`[VoiceEngine] play_artist: found ${artistLocs.length} songs for "${cleanArtist}"`);
+    songloft.log.info(`[VoiceEngine] play_artist found count=${artistLocs.length} artist_length=${textLength(cleanArtist)}`);
 
     const byPlaylist = new Map<number, Set<number>>();
     for (const loc of artistLocs) {
@@ -1222,12 +1242,12 @@ export class VoiceEngine {
           }
         }
       } catch (e) {
-        songloft.log.warn(`[VoiceEngine] play_artist: failed to load playlist ${plId}: ${String(e)}`);
+        songloft.log.warn(`[VoiceEngine] play_artist failed to load playlist id=${plId} error=${safeErrorForLog(e)}`);
       }
     }
 
     if (fullSongs.length === 0) {
-      songloft.log.warn(`[VoiceEngine] play_artist: no playable songs found for "${cleanArtist}"`);
+      songloft.log.warn(`[VoiceEngine] play_artist no playable songs artist_length=${textLength(cleanArtist)}`);
       await this.minaService.textToSpeech(accountId, deviceId, `加载歌手${cleanArtist}的歌曲失败`);
       return null;
     }
@@ -1238,11 +1258,11 @@ export class VoiceEngine {
 
     const ok = await pm.playWithSongs(fullSongs as any, startIndex, 'random', '歌手: ' + cleanArtist, cleanArtist);
     if (!ok) {
-      songloft.log.error(`[VoiceEngine] play_artist failed for "${cleanArtist}"`);
+      songloft.log.error(`[VoiceEngine] play_artist failed artist_length=${textLength(cleanArtist)}`);
       return null;
     }
 
-    songloft.log.info(`[VoiceEngine] play_artist success: "${cleanArtist}" ${fullSongs.length} songs, start=${startIndex}`);
+    songloft.log.info(`[VoiceEngine] play_artist success count=${fullSongs.length} start=${startIndex}`);
     const currentSong = pm.getCurrentSong();
     return {
       songName: currentSong?.title || cleanArtist,
@@ -1276,7 +1296,7 @@ export class VoiceEngine {
       return await this.playSongCandidate(local, pm, searchTerm, songName, accountId, deviceId);
     }
 
-    songloft.log.warn(`[VoiceEngine] Song not found locally: ${songName}, trying online search`);
+    songloft.log.warn(`[VoiceEngine] local miss, trying online search song_name_length=${textLength(songName)}`);
     const external = await this.findExternalSongCandidate(songName, hint);
     if (!external) {
       return null;
@@ -1298,7 +1318,7 @@ export class VoiceEngine {
       if (played) {
         return played;
       }
-      songloft.log.warn(`[VoiceEngine] External search found result but failed to play, falling back to local: ${songName}`);
+      songloft.log.warn(`[VoiceEngine] external candidate failed, falling back to local song_name_length=${textLength(songName)}`);
     }
 
     const local = await this.findLocalSongCandidate(searchTerm);
@@ -1354,7 +1374,7 @@ export class VoiceEngine {
         // warn 级：回落必须能只凭 warn 日志看出「从哪个源换到哪个源、为什么换」。插件日志
         // 默认走 info，而宿主 log level 常被设成 error/warn，导出的日志里一条插件记录都没有
         // （songloft-org/songloft-plugin-miot#62 的排查就卡在这）。
-        songloft.log.warn(`[VoiceEngine] Parallel fallback: source=${failedSource} found a candidate but failed to play, retrying with source=${race.candidate.source} keyword="${songName}"`);
+        songloft.log.warn(`[VoiceEngine] parallel fallback failed_source=${failedSource} retry_source=${race.candidate.source} keyword_length=${textLength(songName)}`);
       }
 
       const played = await this.playSongCandidate(race.candidate, pm, searchTerm, songName, accountId, deviceId, failedSource !== null);
@@ -1365,7 +1385,7 @@ export class VoiceEngine {
     }
 
     if (failedSource !== null) {
-      songloft.log.warn(`[VoiceEngine] Parallel search exhausted all sources, last failed source=${failedSource} keyword="${songName}"`);
+      songloft.log.warn(`[VoiceEngine] parallel search exhausted last_failed_source=${failedSource} keyword_length=${textLength(songName)}`);
     }
     return null;
   }
@@ -1382,7 +1402,7 @@ export class VoiceEngine {
       promise: task
         .then(candidate => ({ slot, candidate }))
         .catch(e => {
-          songloft.log.warn('[VoiceEngine] Search task failed: ' + String(e));
+          songloft.log.warn('[VoiceEngine] search task failed: ' + safeErrorForLog(e));
           return { slot, candidate: null as SongSearchCandidate | null };
         }),
     }));
@@ -1469,12 +1489,12 @@ export class VoiceEngine {
       ]);
       const ok = resp.ok || resp.status === 206;
       if (!ok) {
-        songloft.log.warn(`[VoiceEngine] 外部直链体检不通过 status=${resp.status} (${Date.now() - started}ms): ${rawUrl.slice(0, 80)}`);
+        songloft.log.warn(`[VoiceEngine] 外部直链体检不通过 status=${resp.status} dur_ms=${Date.now() - started} url=${redactURLForLog(rawUrl)}`);
       }
       return ok;
     } catch (e) {
       // 外部直链超时/网络错就判死——本检查的原意就是防过期直链。
-      songloft.log.warn(`[VoiceEngine] 外部直链体检异常 (${Date.now() - started}ms): ${String(e)} → 判为不健康`);
+      songloft.log.warn(`[VoiceEngine] 外部直链体检异常 dur_ms=${Date.now() - started} error=${safeErrorForLog(e)} result=unhealthy`);
       return false;
     }
   }
@@ -1486,7 +1506,7 @@ export class VoiceEngine {
     }
 
     // 从索引中模糊匹配歌曲，获取歌单ID和歌曲索引（使用预加载缓存，纯内存操作）
-    songloft.log.info(`[VoiceEngine] Searching local song: "${searchTerm}"`);
+    songloft.log.info(`[VoiceEngine] searching local song term_length=${textLength(searchTerm)}`);
     const loc = await this.indexingManager.findSongByName(searchTerm);
     if (loc) {
       return { source: 'local_index', loc };
@@ -1512,7 +1532,7 @@ export class VoiceEngine {
 
     const song = await this.onlineSearcher.search(songName, hint);
     if (!song) {
-      songloft.log.warn(`[VoiceEngine] Online search missed for: ${songName}`);
+      songloft.log.warn(`[VoiceEngine] online search missed song_name_length=${textLength(songName)}`);
       return null;
     }
 
@@ -1590,11 +1610,11 @@ export class VoiceEngine {
     // 分组扇出由 playCurrent 对 targets 统一处理，这里不再自己调 fanOutPlayURL，否则重复下发。
     const ok = await pm.playWithSongs([standalone as any], 0, 'order', `单曲: ${standalone.title}`, '');
     if (!ok) {
-      songloft.log.error('[VoiceEngine] Failed to play standalone song: ' + standalone.title + ' - ' + standalone.artist);
+      songloft.log.error(`[VoiceEngine] failed to play standalone song_id=${standalone.id}`);
       return false;
     }
 
-    songloft.log.warn(`[VoiceEngine] 走独立歌曲路径播放（不在任何歌单，无自动续播）: "${standalone.title}" - ${standalone.artist} id=${standalone.id} type=${standalone.type}`);
+    songloft.log.warn(`[VoiceEngine] standalone playback without auto-next song_id=${standalone.id} type=${standalone.type}`);
     return true;
   }
 
@@ -1606,7 +1626,7 @@ export class VoiceEngine {
     accountId: string,
     deviceId: string,
   ): Promise<SongLocation | null> {
-    songloft.log.info(`[VoiceEngine] Matched song: ${loc.songTitle} - ${loc.artist} playlist="${loc.playlistName}" playlistId=${loc.playlistId} songIndex=${loc.songIndex}`);
+    songloft.log.info(`[VoiceEngine] matched song_id=${loc.songId} playlist_id=${loc.playlistId} song_index=${loc.songIndex}`);
 
     // 获取设备配置中的播放模式
     let playMode: PlayMode = 'order';
@@ -1619,7 +1639,7 @@ export class VoiceEngine {
     // 播放歌单，从匹配到的歌曲索引开始
     const ok = await pm.play(loc.playlistId, loc.songIndex, playMode);
     if (ok) {
-      songloft.log.info(`[VoiceEngine] Play song success: ${loc.songTitle} playlist="${loc.playlistName}" index=${loc.songIndex} mode=${playMode}`);
+      songloft.log.info(`[VoiceEngine] play song success song_id=${loc.songId} playlist_id=${loc.playlistId} index=${loc.songIndex} mode=${playMode}`);
       return loc;
     }
 
@@ -1629,18 +1649,18 @@ export class VoiceEngine {
       await this.indexingManager.refresh();
       const newLoc = await this.indexingManager.findSongByName(searchTerm);
       if (newLoc) {
-        songloft.log.info(`[VoiceEngine] Re-matched after refresh: ${newLoc.songTitle} playlist="${newLoc.playlistName}" playlistId=${newLoc.playlistId} songIndex=${newLoc.songIndex}`);
+        songloft.log.info(`[VoiceEngine] re-matched after refresh song_id=${newLoc.songId} playlist_id=${newLoc.playlistId} song_index=${newLoc.songIndex}`);
         const retryOk = await pm.play(newLoc.playlistId, newLoc.songIndex, playMode);
         if (retryOk) {
-          songloft.log.info(`[VoiceEngine] Retry play song success: ${newLoc.songTitle}`);
+          songloft.log.info(`[VoiceEngine] retry play song success song_id=${newLoc.songId}`);
           return newLoc;
         }
       }
-      songloft.log.error(`[VoiceEngine] Retry play song failed after index refresh: ${requestedSongName}`);
+      songloft.log.error(`[VoiceEngine] retry play song failed requested_name_length=${textLength(requestedSongName)}`);
       return null;
     }
 
-    songloft.log.error(`[VoiceEngine] Play song failed: ${loc.songTitle}`);
+    songloft.log.error(`[VoiceEngine] play song failed song_id=${loc.songId}`);
     return null;
   }
 
@@ -1718,7 +1738,7 @@ export class VoiceEngine {
 
     const volume = await this.minaService.syncVolumeFromDevice(accountId, deviceId);
     if (volume < 0) {
-      songloft.log.warn(`[VoiceEngine] Volume command handled by 小爱, but reading it back failed (param=${param} argument="${argument}")`);
+      songloft.log.warn(`[VoiceEngine] volume handled by device but readback failed param=${param} argument_length=${textLength(argument)}`);
       return;
     }
 
@@ -1799,15 +1819,15 @@ export class VoiceEngine {
       const songTitle = song.title || '未知歌曲';
       if (action === 'remove') {
         await songloft.playlists.removeSongs(favPlaylist.id, [song.id]);
-        songloft.log.info(`[VoiceEngine] Unfavorited: ${songTitle} (id=${song.id})`);
+        songloft.log.info(`[VoiceEngine] unfavorited song_id=${song.id}`);
         await this.minaService.textToSpeech(accountId, deviceId, `已取消收藏${songTitle}`);
       } else {
         await songloft.playlists.addSongs(favPlaylist.id, [song.id]);
-        songloft.log.info(`[VoiceEngine] Favorited: ${songTitle} (id=${song.id})`);
+        songloft.log.info(`[VoiceEngine] favorited song_id=${song.id}`);
         await this.minaService.textToSpeech(accountId, deviceId, `已收藏${songTitle}`);
       }
     } catch (e) {
-      songloft.log.error(`[VoiceEngine] Favorite failed: ${String(e)}`);
+      songloft.log.error(`[VoiceEngine] favorite failed: ${safeErrorForLog(e)}`);
       await this.minaService.textToSpeech(accountId, deviceId, '收藏操作失败');
     }
   }
@@ -1923,7 +1943,7 @@ export class VoiceEngine {
 
     if (!text.trim()) return;
 
-    songloft.log.info(`[VoiceEngine] Play announcement: "${text}" mode=${config.play_announcement_wait_mode}`);
+    songloft.log.info(`[VoiceEngine] play announcement text_length=${textLength(text)} mode=${config.play_announcement_wait_mode}`);
     await this.minaService.textToSpeech(accountId, deviceId, text);
     await this.waitAfterAnnouncement(config, text.length, accountId, deviceId);
   }
@@ -1938,7 +1958,7 @@ export class VoiceEngine {
 
     if (!text.trim()) return;
 
-    songloft.log.info(`[VoiceEngine] Play announcement (artist): "${text}" mode=${config.play_announcement_wait_mode}`);
+    songloft.log.info(`[VoiceEngine] play artist announcement text_length=${textLength(text)} mode=${config.play_announcement_wait_mode}`);
     await this.minaService.textToSpeech(accountId, deviceId, text);
     await this.waitAfterAnnouncement(config, text.length, accountId, deviceId);
   }
@@ -1984,7 +2004,7 @@ export class VoiceEngine {
     try {
       await this.minaService.stopPlay(accountId, deviceId);
     } catch (e) {
-      songloft.log.warn('[VoiceEngine] Failed to interrupt broadcast: ' + String(e));
+      songloft.log.warn('[VoiceEngine] failed to interrupt broadcast: ' + safeErrorForLog(e));
     }
 
     const config = await this.configManager.getConfig();
@@ -1994,7 +2014,7 @@ export class VoiceEngine {
         await new Promise(resolve => setTimeout(resolve, 300));
         await this.minaService.textToSpeech(accountId, deviceId, text);
       } catch (e) {
-        songloft.log.warn('[VoiceEngine] Failed to play TTS hint: ' + String(e));
+        songloft.log.warn('[VoiceEngine] failed to play TTS hint: ' + safeErrorForLog(e));
       }
     }
   }
@@ -2065,7 +2085,7 @@ export class VoiceEngine {
   private async executeSleepTimer(query: string, accountId: string, deviceId: string): Promise<void> {
     const mode = detectSleepTimerMode(query);
     if (!mode) {
-      songloft.log.warn(`[VoiceEngine] [SleepTimer] 无法识别定时模式 query="${query}"`);
+      songloft.log.warn(`[VoiceEngine] sleep timer mode unrecognized query_length=${textLength(query)}`);
       await this.minaService.textToSpeech(accountId, deviceId, '抱歉，无法识别定时时间');
       return;
     }
@@ -2073,7 +2093,7 @@ export class VoiceEngine {
     if (mode === 'songs') {
       const count = parseSongsCount(query);
       if (count <= 0) {
-        songloft.log.warn(`[VoiceEngine] [SleepTimer] 无法解析曲目数 query="${query}"`);
+        songloft.log.warn(`[VoiceEngine] sleep timer song count invalid query_length=${textLength(query)}`);
         await this.minaService.textToSpeech(accountId, deviceId, '抱歉，无法识别曲目数');
         return;
       }
@@ -2083,7 +2103,7 @@ export class VoiceEngine {
     } else {
       const minutes = parseTimeDuration(query);
       if (minutes <= 0) {
-        songloft.log.warn(`[VoiceEngine] [SleepTimer] 无法解析时间 query="${query}"`);
+        songloft.log.warn(`[VoiceEngine] sleep timer duration invalid query_length=${textLength(query)}`);
         await this.minaService.textToSpeech(accountId, deviceId, '抱歉，无法识别定时时间');
         return;
       }
@@ -2114,7 +2134,7 @@ export class VoiceEngine {
         : `${duration}分钟`;
       await this.minaService.textToSpeech(accountId, deviceId, `好的，${desc}后将停止播放`);
     } else {
-      songloft.log.warn(`[VoiceEngine] [SleepTimer] [AI] 参数无效: ${JSON.stringify(result.params)}`);
+      songloft.log.warn('[VoiceEngine] AI sleep timer parameters invalid');
       await this.minaService.textToSpeech(accountId, deviceId, '抱歉，无法识别定时时间');
     }
   }

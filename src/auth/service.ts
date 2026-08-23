@@ -8,7 +8,6 @@ import { QRCodeLogin, QRCodeState, PollResult } from '../qrcode/qrcode';
 import { ConfigManager } from '../config/manager';
 import { AccountManager } from '../account/manager';
 import { LoginSession, SessionManager } from './session';
-import { md5 } from '../utils/crypto';
 import {
   MINA_SID,
   SERVICE_TOKEN_VALID_HOURS,
@@ -17,6 +16,7 @@ import {
 } from '../mina/constants';
 import type { LoginStateType } from '../mina/constants';
 import type { XiaomiTokenInfo, LoginResult } from '../types';
+import { opaqueID, safeErrorForLog } from '../utils/safe_log';
 
 /** 同一账号重登录最小间隔（毫秒） */
 const RELOGIN_MIN_INTERVAL_MS = 60 * 1000;
@@ -63,7 +63,6 @@ export class AuthService {
     const session = this.sessionManager.getOrCreateSession(accountId);
     session.reset();
     session.username = username;
-    session.password = md5(password).toUpperCase();
     session.auth = auth;
 
     // 执行登录
@@ -97,10 +96,11 @@ export class AuthService {
       // 创建 MinaHTTPClient 并保存
       await this.setupMinaClient(accountId, result.tokenInfo);
 
-      // 保存密码、登录方式和 passToken（passToken 用于后续 serviceToken 续期）
+      // 只保存登录方式和 passToken（用于后续 serviceToken 续期）。
+      // 原始密码绝不落盘；passToken 失效后由用户重新扫码/登录。
       const passToken = auth.getCookieJar().getValue('passToken');
       const updates: Record<string, any> = {
-        password,
+        password: '',
         login_method: 'password',
       };
       if (passToken) {
@@ -250,7 +250,7 @@ export class AuthService {
       if (effectiveAccountId !== accountId) {
         try {
           await this.accountManager.deleteAccount(accountId);
-          console.log(`[auth] pollQRCode: cleaned up temporary account: ${accountId}`);
+          console.log(`[auth] pollQRCode: cleaned up temporary account: ${opaqueID(accountId)}`);
         } catch {
           // 旧账号可能不存在（首次登录），忽略
         }
@@ -281,7 +281,7 @@ export class AuthService {
         // 启动 Token 刷新定时器
         this.startTokenRefresh(effectiveAccountId);
       } catch (e: any) {
-        console.log(`[auth] pollQRCode: post-processing error (non-critical): ${e.message || e}`);
+        console.log(`[auth] pollQRCode: post-processing error (non-critical): ${safeErrorForLog(e)}`);
       }
     }
 
@@ -338,18 +338,18 @@ export class AuthService {
 
   /**
    * 快速重新登录（QuickReLogin）
-   * 优先尝试 passToken → serviceToken → 密码
+   * 优先尝试 passToken → serviceToken；两者均失效时要求用户重新扫码/登录。
    * 带60s最小间隔保护（防止雪崩）
    */
   async relogin(accountId: string): Promise<LoginResult> {
     // 60s 最小间隔保护
     const lastTime = this.lastReloginTime.get(accountId);
     if (lastTime && Date.now() - lastTime < RELOGIN_MIN_INTERVAL_MS) {
-      console.log(`[auth] relogin skipped: too soon since last attempt, account=${accountId}`);
+      console.log(`[auth] relogin skipped: too soon since last attempt, account=${opaqueID(accountId)}`);
       return { state: 'success', message: '重登录跳过（距上次不足60s）' };
     }
 
-    console.log(`[auth] relogin starting, account=${accountId}`);
+    console.log(`[auth] relogin starting, account=${opaqueID(accountId)}`);
     this.lastReloginTime.set(accountId, Date.now());
 
     const accountConfig = await this.configManager.getAccount(accountId);
@@ -360,7 +360,7 @@ export class AuthService {
     // 优先尝试 passToken 刷新
     if (accountConfig.pass_token) {
       if (await this.refreshServiceTokenByPassToken(accountId, accountConfig.pass_token, accountConfig.user_id)) {
-        console.log(`[auth] relogin with passToken succeeded, account=${accountId}`);
+        console.log(`[auth] relogin with passToken succeeded, account=${opaqueID(accountId)}`);
         return { state: 'success', message: 'passToken 刷新成功' };
       }
     }
@@ -369,24 +369,15 @@ export class AuthService {
     const micoService = accountConfig.services[MINA_SID];
     if (micoService && micoService.service_token && accountConfig.user_id) {
       if (await this.autoLoginWithToken(accountId, accountConfig.user_id, micoService.service_token, micoService.ssecurity, micoService.expires_at)) {
-        console.log(`[auth] relogin with token succeeded, account=${accountId}`);
+        console.log(`[auth] relogin with token succeeded, account=${opaqueID(accountId)}`);
         this.lastReloginTime.set(accountId, Date.now());
         return { state: 'success', message: 'Token 重登录成功' };
       }
-      console.log(`[auth] relogin with token failed, trying password, account=${accountId}`);
+      console.log(`[auth] relogin with token failed, interactive login required, account=${opaqueID(accountId)}`);
     }
 
-    // 尝试密码重新登录
-    if (accountConfig.password) {
-      const loginResult = await this.autoLoginWithPassword(accountId, accountConfig.account, accountConfig.password);
-      if (loginResult) {
-        console.log(`[auth] relogin with password succeeded, account=${accountId}`);
-        return { state: 'success', message: '密码重登录成功' };
-      }
-    }
-
-    console.log(`[auth] relogin failed: all methods exhausted, account=${accountId}`);
-    return { state: 'failed', message: '重登录失败：所有方式均已尝试' };
+    console.log(`[auth] relogin failed: all methods exhausted, account=${opaqueID(accountId)}`);
+    return { state: 'failed', message: '重登录失败，请重新扫码或输入账号凭据' };
   }
 
   // ===== Token生命周期 =====
@@ -400,12 +391,12 @@ export class AuthService {
 
     const timerId = setInterval(() => {
       this.refreshToken(accountId).catch(e => {
-        console.log(`[auth] refreshToken error: account=${accountId} error=${e?.message || e}`);
+        console.log(`[auth] refreshToken error: account=${opaqueID(accountId)} error=${safeErrorForLog(e)}`);
       });
     }, TOKEN_REFRESH_INTERVAL_MS);
 
     this.refreshTimers.set(accountId, timerId);
-    console.log(`[auth] started token refresh timer for account=${accountId}`);
+    console.log(`[auth] started token refresh timer for account=${opaqueID(accountId)}`);
   }
 
   /**
@@ -416,7 +407,7 @@ export class AuthService {
     if (timerId !== undefined) {
       clearInterval(timerId);
       this.refreshTimers.delete(accountId);
-      console.log(`[auth] stopped token refresh timer for account=${accountId}`);
+      console.log(`[auth] stopped token refresh timer for account=${opaqueID(accountId)}`);
     }
   }
 
@@ -433,13 +424,27 @@ export class AuthService {
       return;
     }
 
+    // 安全迁移：旧版本可能在 accounts 中保存原始密码。启动时先统一清空，
+    // 后续只依赖 passToken / 已有 serviceToken；失效时要求交互式重登录。
+    let scrubbedPasswords = 0;
+    for (const account of accounts) {
+      if (account.password) {
+        account.password = '';
+        scrubbedPasswords++;
+      }
+    }
+    if (scrubbedPasswords > 0) {
+      await this.configManager.saveAccounts(accounts);
+      console.log(`[auth] autoLoginAll: removed ${scrubbedPasswords} persisted password(s)`);
+    }
+
     console.log(`[auth] autoLoginAll: processing ${accounts.length} account(s)`);
 
     for (const account of accounts) {
       try {
         await this.autoLoginAccount(account.id);
       } catch (e: any) {
-        console.log(`[auth] autoLoginAll: failed for account=${account.id}: ${e.message || e}`);
+        console.log(`[auth] autoLoginAll: failed for account=${opaqueID(account.id)}: ${safeErrorForLog(e)}`);
       }
     }
   }
@@ -471,12 +476,12 @@ export class AuthService {
   /**
    * Token 刷新逻辑
    * 检查 Token 过期时间，接近过期时主动刷新
-   * 优先策略：passToken → serviceToken → 密码
+   * 优先策略：passToken → serviceToken；失败后等待用户交互式重登录。
    */
   private async refreshToken(accountId: string): Promise<boolean> {
     const accountConfig = await this.configManager.getAccount(accountId);
     if (!accountConfig) {
-      console.log(`[auth] refreshToken: account config not found, account=${accountId}`);
+      console.log(`[auth] refreshToken: account config not found, account=${opaqueID(accountId)}`);
       return false;
     }
 
@@ -492,39 +497,31 @@ export class AuthService {
       }
 
       if (remainingMs <= 0) {
-        console.log(`[auth] refreshToken: token already expired, account=${accountId}`);
+        console.log(`[auth] refreshToken: token already expired, account=${opaqueID(accountId)}`);
       } else {
         const remainingHours = (remainingMs / 3600000).toFixed(1);
-        console.log(`[auth] refreshToken: token expiring soon (${remainingHours}h remaining), account=${accountId}`);
+        console.log(`[auth] refreshToken: token expiring soon (${remainingHours}h remaining), account=${opaqueID(accountId)}`);
       }
     }
 
     // 优先使用 passToken 刷新
     if (accountConfig.pass_token && accountConfig.user_id) {
       if (await this.refreshServiceTokenByPassToken(accountId, accountConfig.pass_token, accountConfig.user_id)) {
-        console.log(`[auth] refreshToken: passToken refresh succeeded, account=${accountId}`);
+        console.log(`[auth] refreshToken: passToken refresh succeeded, account=${opaqueID(accountId)}`);
         return true;
       }
-      console.log(`[auth] refreshToken: passToken refresh failed, account=${accountId}`);
+      console.log(`[auth] refreshToken: passToken refresh failed, account=${opaqueID(accountId)}`);
     }
 
     // 尝试已有 serviceToken 刷新
     if (micoService && micoService.service_token && accountConfig.user_id) {
       if (await this.autoLoginWithToken(accountId, accountConfig.user_id, micoService.service_token, micoService.ssecurity, micoService.expires_at)) {
-        console.log(`[auth] refreshToken: token login succeeded, account=${accountId}`);
+        console.log(`[auth] refreshToken: token login succeeded, account=${opaqueID(accountId)}`);
         return true;
       }
     }
 
-    // 尝试密码重登
-    if (accountConfig.password && accountConfig.account) {
-      if (await this.autoLoginWithPassword(accountId, accountConfig.account, accountConfig.password)) {
-        console.log(`[auth] refreshToken: password login succeeded, account=${accountId}`);
-        return true;
-      }
-    }
-
-    console.log(`[auth] refreshToken: all methods failed, account=${accountId}`);
+    console.log(`[auth] refreshToken: all methods failed, account=${opaqueID(accountId)}`);
     return false;
   }
 
@@ -537,11 +534,11 @@ export class AuthService {
     // 60s 最小间隔保护
     const lastTime = this.lastReloginTime.get(accountId);
     if (lastTime && Date.now() - lastTime < RELOGIN_MIN_INTERVAL_MS) {
-      console.log(`[auth] handleTokenExpired: skipped (too soon), account=${accountId}`);
+      console.log(`[auth] handleTokenExpired: skipped (too soon), account=${opaqueID(accountId)}`);
       return false;
     }
 
-    console.log(`[auth] handleTokenExpired: refreshing token, account=${accountId}`);
+    console.log(`[auth] handleTokenExpired: refreshing token, account=${opaqueID(accountId)}`);
     this.lastReloginTime.set(accountId, Date.now());
 
     const success = await this.refreshToken(accountId);
@@ -549,12 +546,12 @@ export class AuthService {
       // 刷新成功，更新当前客户端的 tokenInfo
       const newClient = this.accountManager.getMinaClient(accountId) as MinaHTTPClient | null;
       if (newClient) {
-        console.log(`[auth] handleTokenExpired: refresh succeeded, account=${accountId}`);
+        console.log(`[auth] handleTokenExpired: refresh succeeded, account=${opaqueID(accountId)}`);
         return true;
       }
     }
 
-    console.log(`[auth] handleTokenExpired: refresh failed, account=${accountId}`);
+    console.log(`[auth] handleTokenExpired: refresh failed, account=${opaqueID(accountId)}`);
     return false;
   }
 
@@ -564,17 +561,17 @@ export class AuthService {
   private async refreshServiceTokenByPassToken(accountId: string, passToken: string, userId: string): Promise<boolean> {
     if (!passToken || !userId) return false;
 
-    console.log(`[auth] refreshing serviceToken via passToken, account=${accountId}`);
+    console.log(`[auth] refreshing serviceToken via passToken, account=${opaqueID(accountId)}`);
 
     const auth = new MinaAuth();
     const result = await auth.refreshByPassToken(passToken, userId, MINA_SID);
 
     if (result.state !== LoginState.SUCCESS || !result.tokenInfo) {
-      console.log(`[auth] passToken refresh failed, account=${accountId}`);
+      console.log(`[auth] passToken refresh failed, account=${opaqueID(accountId)}`);
       return false;
     }
 
-    console.log(`[auth] passToken refresh succeeded, account=${accountId}`);
+    console.log(`[auth] passToken refresh succeeded, account=${opaqueID(accountId)}`);
 
     // 验证新 token 是否有效
     const client = MinaHTTPClient.fromManualToken(
@@ -584,7 +581,7 @@ export class AuthService {
     );
 
     if (!(await client.validateToken())) {
-      console.log(`[auth] refreshed token validation failed, account=${accountId}`);
+      console.log(`[auth] refreshed token validation failed, account=${opaqueID(accountId)}`);
       return false;
     }
 
@@ -637,40 +634,13 @@ export class AuthService {
   }
 
   /**
-   * 使用密码自动登录
-   * @returns true 如果登录成功
-   */
-  private async autoLoginWithPassword(accountId: string, username: string, password: string): Promise<boolean> {
-    if (!password) return false;
-
-    const auth = new MinaAuth();
-    const result = await auth.login(username, password);
-
-    if (result.state !== LoginState.SUCCESS || !result.tokenInfo) {
-      // 需要验证码/短信验证的情况下，自动登录无法完成
-      if (result.state === LoginState.NEED_CAPTCHA) {
-        console.log(`[auth] autoLoginWithPassword: requires captcha, account=${accountId}`);
-      } else if (result.state === LoginState.NEED_VERIFY) {
-        console.log(`[auth] autoLoginWithPassword: requires verification, account=${accountId}`);
-      }
-      return false;
-    }
-
-    // 登录成功，创建客户端
-    await this.setupMinaClient(accountId, result.tokenInfo);
-    await this.saveTokenInfo(accountId, result.tokenInfo);
-
-    return true;
-  }
-
-  /**
    * 自动登录指定账号
    * 根据配置选择最优的登录策略
    */
   private async autoLoginAccount(accountId: string): Promise<void> {
     const accountConfig = await this.configManager.getAccount(accountId);
     if (!accountConfig) {
-      console.log(`[auth] autoLoginAccount: account config not found, account=${accountId}`);
+      console.log(`[auth] autoLoginAccount: account config not found, account=${opaqueID(accountId)}`);
       return;
     }
 
@@ -683,17 +653,17 @@ export class AuthService {
 
         if (remainingMs < thresholdMs) {
           if (remainingMs <= 0) {
-            console.log(`[auth] autoLoginAccount: serviceToken expired, refreshing via passToken, account=${accountId}`);
+            console.log(`[auth] autoLoginAccount: serviceToken expired, refreshing via passToken, account=${opaqueID(accountId)}`);
           } else {
-            console.log(`[auth] autoLoginAccount: serviceToken expiring soon, proactively refreshing, account=${accountId}`);
+            console.log(`[auth] autoLoginAccount: serviceToken expiring soon, proactively refreshing, account=${opaqueID(accountId)}`);
           }
 
           if (await this.refreshServiceTokenByPassToken(accountId, accountConfig.pass_token, accountConfig.user_id)) {
-            console.log(`[auth] autoLoginAccount: passToken refresh succeeded, account=${accountId}`);
+            console.log(`[auth] autoLoginAccount: passToken refresh succeeded, account=${opaqueID(accountId)}`);
             this.startTokenRefresh(accountId);
             return;
           }
-          console.log(`[auth] autoLoginAccount: passToken refresh failed, falling back, account=${accountId}`);
+          console.log(`[auth] autoLoginAccount: passToken refresh failed, falling back, account=${opaqueID(accountId)}`);
         }
       }
     }
@@ -702,23 +672,14 @@ export class AuthService {
     const micoService = accountConfig.services[MINA_SID];
     if (micoService && micoService.service_token && accountConfig.user_id) {
       if (await this.autoLoginWithToken(accountId, accountConfig.user_id, micoService.service_token, micoService.ssecurity, micoService.expires_at)) {
-        console.log(`[auth] autoLoginAccount: token login succeeded, account=${accountId}`);
+        console.log(`[auth] autoLoginAccount: token login succeeded, account=${opaqueID(accountId)}`);
         this.startTokenRefresh(accountId);
         return;
       }
-      console.log(`[auth] autoLoginAccount: token login failed, trying password, account=${accountId}`);
+      console.log(`[auth] autoLoginAccount: token login failed, interactive login required, account=${opaqueID(accountId)}`);
     }
 
-    // 尝试密码登录
-    if (accountConfig.password && accountConfig.account) {
-      if (await this.autoLoginWithPassword(accountId, accountConfig.account, accountConfig.password)) {
-        console.log(`[auth] autoLoginAccount: password login succeeded, account=${accountId}`);
-        this.startTokenRefresh(accountId);
-        return;
-      }
-    }
-
-    console.log(`[auth] autoLoginAccount: no valid login method, account=${accountId}`);
+    console.log(`[auth] autoLoginAccount: no valid login method, account=${opaqueID(accountId)}`);
   }
 
   /**
@@ -737,7 +698,7 @@ export class AuthService {
       await this.setupMinaClient(accountId, result.tokenInfo);
 
       // 保存登录方式和 passToken
-      const updates: Record<string, any> = { login_method: 'password' };
+      const updates: Record<string, any> = { login_method: 'password', password: '' };
       if (session.auth) {
         const passToken = session.auth.getCookieJar().getValue('passToken');
         if (passToken) {
@@ -817,7 +778,7 @@ export class AuthService {
     try {
       await this.configManager.updateAccount(accountId, updates);
     } catch (e: any) {
-      console.log(`[auth] saveTokenInfo: failed, account=${accountId}: ${e.message || e}`);
+      console.log(`[auth] saveTokenInfo: failed, account=${opaqueID(accountId)}: ${safeErrorForLog(e)}`);
     }
   }
 

@@ -89,6 +89,7 @@ async function resolveTargetDevice(
  * GET  /voice-commands → 获取语音口令配置
  * POST /voice-commands → 设置语音口令配置
  * POST /voice-commands/ai-test → 测试 AI 口令分析
+ * POST /voice-commands/external-search-test → 测试外部搜索（仅返回安全摘要）
  * POST /voice-commands/test → 模拟语音口令（完整匹配+执行）并返回诊断
  * POST /voice-commands/said → 模拟小米云对话消息并交给语音引擎处理
  */
@@ -153,6 +154,20 @@ export function registerVoiceCommandHandlers(
       const result = await analyzer.strictAnalyze(query, aiConfig);
       const elapsed_ms = Date.now() - start;
       return jsonResponse({ success: true, data: result, elapsed_ms });
+    } catch (e: any) {
+      return jsonResponse({ success: false, error: e.message || String(e) });
+    }
+  });
+
+  router.post('/voice-commands/external-search-test', async (req: HTTPRequest) => {
+    try {
+      const body = parseBody(req);
+      const query = body.query as string | undefined;
+      if (!query || typeof query !== 'string' || !query.trim()) {
+        return jsonResponse({ success: false, error: 'query is required' });
+      }
+      const result = await voiceEngine.testExternalSearch(query.trim());
+      return jsonResponse({ success: true, data: result });
     } catch (e: any) {
       return jsonResponse({ success: false, error: e.message || String(e) });
     }

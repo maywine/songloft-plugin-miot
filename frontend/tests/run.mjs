@@ -55,6 +55,7 @@ const searchAuth = fs.readFileSync(path.join(frontendRoot, '../src/voicecmd/sear
 const conversationMonitor = fs.readFileSync(path.join(frontendRoot, '../src/conversation/monitor.ts'), 'utf8');
 const aiAnalyzer = fs.readFileSync(path.join(frontendRoot, '../src/voicecmd/ai_analyzer.ts'), 'utf8');
 const safeLog = fs.readFileSync(path.join(frontendRoot, '../src/utils/safe_log.ts'), 'utf8');
+const pluginMain = fs.readFileSync(path.join(frontendRoot, '../src/main.ts'), 'utf8');
 const configManager = fs.readFileSync(path.join(frontendRoot, '../src/config/manager.ts'), 'utf8');
 const urlBuilder = fs.readFileSync(path.join(frontendRoot, '../src/player/url_builder.ts'), 'utf8');
 const hostSecurity = fs.readFileSync(path.join(frontendRoot, '../src/utils/host_security.ts'), 'utf8');
@@ -362,6 +363,7 @@ assert.doesNotMatch(conversationMonitor, /q="\$\{q\.substring|a="\$\{a\.substrin
 assert.doesNotMatch(aiAnalyzer, /API response: \$\{content\.slice/);
 assert.match(safeLog, /function redactURLForLog/);
 assert.match(safeLog, /function safeErrorForLog/);
+assert.match(pluginMain, /if \(validAddrs\.length === 0\)/);
 assert.match(configManager, /songloft\.secrets\.get/);
 assert.match(configManager, /songloft\.secrets\.set/);
 assert.match(configManager, /password: ''/);

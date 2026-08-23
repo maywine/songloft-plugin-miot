@@ -1,6 +1,6 @@
 # MIoT 智能音箱插件安全加固调研
 
-> 状态：调研基线 + 本地修复实施记录（提交、推送与树莓派部署待开发流程确认）
+> 状态：调研基线 + 修复实施与树莓派部署记录（真实音箱播放待账号接入）
 >
 > 日期：2026-08-23
 >
@@ -12,7 +12,7 @@
 
 本文重新评估 MIoT 插件在家庭树莓派部署中的风险，并给出后续修复边界。
 
-最初调研阶段只产出结论；后续已按本文阶段 A/B 在本地插件、Songloft 宿主及 Flutter 商店界面实施修复。提交、推送与树莓派部署状态见第 12 节。
+最初调研阶段只产出结论；后续已按本文阶段 A/B 在插件、Songloft 宿主及 Flutter 商店界面实施修复并部署到树莓派。剩余验证状态见第 12 节。
 
 审计覆盖：
 
@@ -462,9 +462,9 @@
 
 本地构建产物 `v2026.8.23`：
 
-- `miot.jsplugin.zip` 原始 SHA-256：`ee10fc6e338f6ad4f2bc59c315b7b5fbca5affca5438060e5809d491553969c2`
-- ZIP 内 `entryHash`：`5fb7fc2c7d95522afe6fcc0c9313546128765bc61e4cbac72b20c14bdc2b9bae`
-- ZIP 内 `zipHash`：`737289cc50c0417535ab24144f09d8291d471c2f2a11f9493827ad6d25ea82f9`
+- `miot.jsplugin.zip` 原始 SHA-256：`3afdecdbc7b22572913f780898978938d29e2b43d31817020b8abc5a8828879a`
+- ZIP 内 `entryHash`：`fec5df1e3b58bb1fcc38bfdb2ed3e54f4c40e123e5dca123580e8f3f804c3cb5`
+- ZIP 内 `zipHash`：`42dc06166925a77820b2803b42b01fc9235b3a3e5787ec77425688ff9c6b1490`
 
 ### 12.2 宿主阶段 B
 
@@ -487,8 +487,14 @@
 - Flutter：插件商店/前端 Token 链定向 analyze、21 项定向测试、embedded Web 构建通过。
 - 本地真实实例：新安装返回 `inactive`；启用后配置 API 不返回 AI key；磁盘秘密不含明文且权限为 `0700/0600`；未确认新增 `net` 权限返回 409 且已装版本/权限未改变。
 - 本地真实浏览器：iframe 属性与响应 CSP 都无 `allow-same-origin`，读取 `localStorage` 返回 `SecurityError`；页面只取得 `token_kind=plugin`、绑定 `entryPath=miot` 的 scoped Token，自身配置接口返回 200，宿主管理配置接口在 CORS 预检阶段被阻断。等待一次 60 秒轮换后 JTI 已变化而插件文档导航次数保持 1；顶层直开无 Token 时同样为 opaque origin 且自身 API 返回 401，携 scoped Token 时仅自身 API 返回 200。
+- 三个仓库修复已提交并推送：插件 `d58a33c`、Player `7ca9878`、宿主 `1c2884c`；宿主另以 `3fa01ee` 修正 Player 子模块 URL，使 fork-only commit 可被全新拉取。
+- 树莓派运行 `linux/arm64` 完整版宿主 `2.11.7`（commit `3fa01ee`），容器为 healthy，使用 `/home/pi/songloft/{data,music}` 持久化；升级前快照位于 `/home/pi/songloft/data.backup-20260823-212235`。
+- 固定 SHA 的插件已安装并在重启后保持 active；最终 ZIP 原始 SHA-256、`entryHash`、`zipHash` 均与本节 12.1 一致，`command` 权限未再出现。
+- 树莓派实测 scoped Token 有效期 900 秒：访问自身 `/jsplugin/miot/accounts` 返回 200，访问宿主 `/configs` 返回 403；页面响应包含不带 `allow-same-origin` 的 CSP sandbox 与 `Referrer-Policy: no-referrer`。
+- 树莓派实测插件私有数据目录/文件权限为 `0700/0600`；配置接口对外部搜索 Token 与 AI key 只返回空值和 `has_*` 状态。
+- 容器重启后宿主与插件均正常恢复。QuickJS 实机日志确认 URL 脱敏不依赖 WHATWG `URL`，网卡地址为空时跳过失效自检，不再产生“地址失效”的假告警。
 
 ### 12.4 尚待完成
 
-- 按开发流程确认后提交并推送 `maywine/songloft-plugin-miot`、`maywine/songloft`，以及承载商店 UI 改动的 `maywine/songloft-player` fork。
-- 在树莓派部署 2.11.7 宿主与固定 SHA 的 `v2026.8.23` 插件，并执行重启恢复、实际音箱播放和日志复核。
+- 树莓派当前账号数与设备数均为 0。需先通过插件页面扫码/交互登录小米账号并选择音箱，再执行 TTS、在线音频 URL 播放、暂停/停止和日志复核；不要通过聊天传递小米密码或 Token。
+- `v2026.8.23` 的 GitHub Release 尚未创建，当前 `download_url` 返回 404；需手动触发 `Release Plugin` workflow（版本填 `2026.8.23`）或等待定时工作流生成不可变 Release 与 attestation。树莓派当前使用的是本地固定 SHA 工件，不受该 404 影响。

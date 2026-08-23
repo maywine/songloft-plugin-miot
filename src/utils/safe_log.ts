@@ -14,17 +14,32 @@ export function textLength(value: unknown): number {
 export function redactURLForLog(rawURL: unknown): string {
   if (typeof rawURL !== 'string' || !rawURL.trim()) return '<empty-url>';
   const value = rawURL.trim();
-  try {
-    const absolute = new URL(value, 'http://songloft.invalid');
-    const isRelative = !/^https?:\/\//i.test(value);
-    const base = isRelative
-      ? absolute.pathname
-      : `${absolute.protocol}//${absolute.host}${absolute.pathname}`;
-    const keys = Array.from(absolute.searchParams.keys()).filter(Boolean).sort();
-    return keys.length > 0 ? `${base}?keys=${keys.join(',')}` : base;
-  } catch {
+
+  // QuickJS 宿主没有浏览器/Node 的 WHATWG URL 全局，日志脱敏不能依赖它。
+  const fragmentIndex = value.indexOf('#');
+  const withoutFragment = fragmentIndex >= 0 ? value.slice(0, fragmentIndex) : value;
+  const queryIndex = withoutFragment.indexOf('?');
+  const rawBase = queryIndex >= 0 ? withoutFragment.slice(0, queryIndex) : withoutFragment;
+  const rawQuery = queryIndex >= 0 ? withoutFragment.slice(queryIndex + 1) : '';
+
+  let base = rawBase;
+  const absolute = rawBase.match(/^(https?):\/\/([^/?#]+)(\/[^?#]*)?$/i);
+  if (absolute) {
+    const authority = absolute[2];
+    const host = authority.slice(authority.lastIndexOf('@') + 1);
+    if (!host || /[\s\u0000-\u001f\u007f]/.test(host)) return '<invalid-url>';
+    base = `${absolute[1].toLowerCase()}://${host}${absolute[3] || ''}`;
+  } else if (!rawBase.startsWith('/') || /[\s\u0000-\u001f\u007f]/.test(rawBase)) {
     return '<invalid-url>';
   }
+
+  const keys = rawQuery
+    .split('&')
+    .map(part => part.slice(0, part.indexOf('=') >= 0 ? part.indexOf('=') : part.length))
+    .filter(key => /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(key))
+    .sort();
+  if (!rawQuery) return base;
+  return `${base}?keys=${keys.length > 0 ? keys.join(',') : '<redacted>'}`;
 }
 
 /**

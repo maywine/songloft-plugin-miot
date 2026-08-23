@@ -54,6 +54,10 @@ async function warnIfServerHostStale(serverHost: string): Promise<void> {
       return;
     }
     const validAddrs = localAddrs.filter((addr): addr is string => typeof addr === 'string');
+    if (validAddrs.length === 0) {
+      songloft.log.warn('[URLBuilder] server_host 失效自检跳过（本机没有可用网卡地址）');
+      return;
+    }
     const norm = (s: string) => s.trim().toLowerCase().replace(/\/$/, '');
     if (!validAddrs.some(a => norm(a) === norm(host))) {
       songloft.log.warn('[URLBuilder] server_host=' + redactURLForLog(serverHost) + ' 不在当前本机网卡地址中（' + validAddrs.join(', ') + '）；服务器可能已更换 IP 或音箱不在同一网段，音箱将无法访问，请在设置页重新选择地址');

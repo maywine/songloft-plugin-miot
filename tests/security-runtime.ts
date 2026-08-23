@@ -94,6 +94,9 @@ assert.equal(
   redactURLForLog('https://example.com/play?access_token=secret&url=https%3A%2F%2Fcdn.example%2Fa'),
   'https://example.com/play?keys=access_token,url',
 );
+assert.equal(redactURLForLog('http://192.168.110.56:58091'), 'http://192.168.110.56:58091');
+assert.equal(redactURLForLog('/api/play?token=secret'), '/api/play?keys=token');
+assert.equal(redactURLForLog('javascript:alert(1)'), '<invalid-url>');
 const safeError = safeErrorForLog(
   'request https://example.com/play?access_token=secret failed Authorization=Bearer abc.def password=hunter2',
 );

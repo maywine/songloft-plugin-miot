@@ -95,7 +95,7 @@ jobs:
           REQUESTED_VERSION: ${{ github.event.inputs.version }}
         run: |
           if [ "$EVENT_NAME" = "push" ]; then
-            VERSION="$(tr -d '[:space:]' < .github/release-request)"
+            VERSION="$(sed -n '/^[[:space:]]*#/d; /^[[:space:]]*$/d; p' .github/release-request | head -n 1 | tr -d '[:space:]')"
           elif [ -n "$REQUESTED_VERSION" ]; then
             VERSION="$REQUESTED_VERSION"
           else

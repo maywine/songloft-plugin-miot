@@ -49,13 +49,18 @@ jobs:
             exit 0
           fi
 
-          # 排除本 workflow 自己产生的 bump 提交，只数真实改动
-          COUNT="$(git log --oneline --invert-grep \
-                     --grep='^chore(release): bump to v' \
-                     "${LAST_TAG}..HEAD" | wc -l)"
-          echo "自 ${LAST_TAG} 以来的提交："
-          git log --oneline "${LAST_TAG}..HEAD"
-          echo "其中非发版提交数：${COUNT}"
+          # README、审计/测试与 CI 文件不进入插件 ZIP，单独修改它们不应制造空版本。
+          CHANGED_FILES="$(git diff --name-only "${LAST_TAG}..HEAD" -- \
+            . \
+            ':(exclude)README.md' \
+            ':(exclude)docs/**' \
+            ':(exclude)tests/**' \
+            ':(exclude)frontend/tests/**' \
+            ':(exclude).github/**')"
+          COUNT="$(printf '%s\n' "$CHANGED_FILES" | awk 'NF { count++ } END { print count + 0 }')"
+          echo "自 ${LAST_TAG} 以来会影响插件工件的文件："
+          printf '%s\n' "$CHANGED_FILES"
+          echo "文件数：${COUNT}"
 
           if [ "$COUNT" -gt 0 ]; then
             echo "should_release=true" >> $GITHUB_OUTPUT
@@ -178,7 +183,7 @@ jobs:
             .digest('hex');
           fs.writeFileSync('plugin.json', JSON.stringify(root, null, 2) + '\n');
           NODE
-          sha256sum "dist/${ZIP_NAME}" > "dist/${ZIP_NAME}.sha256"
+          (cd dist && sha256sum "${ZIP_NAME}" > "${ZIP_NAME}.sha256")
           npm run validate
           echo "entryPath=${ENTRY_PATH}" >> $GITHUB_OUTPUT
           echo "zip_name=${ZIP_NAME}" >> $GITHUB_OUTPUT

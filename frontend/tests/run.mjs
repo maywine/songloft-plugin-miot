@@ -378,7 +378,7 @@ assert.doesNotMatch(taskExecutor, /定时任务执行失败[^\n]*error=\$\{safeE
 assert.match(releaseWorkflow, /delete manifest\.downloadSha256/);
 assert.match(releaseWorkflow, /root\.downloadSha256 = crypto\.createHash\('sha256'\)/);
 assert.match(releaseWorkflow, /paths:\s*\n\s*- '\.github\/release-request'/);
-assert.match(releaseWorkflow, /VERSION="\$\(tr -d '\[:space:\]' < \.github\/release-request\)"/);
+assert.match(releaseWorkflow, /VERSION="\$\(sed -n .* \.github\/release-request \| head -n 1 \| tr -d '\[:space:\]'\)"/);
 assert.match(releaseWorkflow, /lock\.packages\[''\]\.version = version/);
 assert.match(releaseWorkflow, /git add plugin\.json package\.json package-lock\.json/);
 assert.match(releaseWorkflow, /git commit -s -m/);

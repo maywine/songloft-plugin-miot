@@ -26,6 +26,24 @@ export interface PlaybackURLOptions {
 }
 
 /**
+ * 构造宿主内部 HEAD 预热路径。只处理需要转码的本地歌曲；远程直链和电台不能这样预热。
+ */
+export function buildCurrentSongPrewarmPath(song: {
+  url?: string;
+  type?: string;
+}, options?: PlaybackURLOptions): string {
+  const songUrl = song.url || '';
+  if (song.type !== 'local' || !songUrl.startsWith('/') || (!options?.forceMp3 && !options?.normalize)) {
+    return '';
+  }
+
+  const separator = songUrl.includes('?') ? '&' : '?';
+  let path = songUrl + separator + 'format=mp3';
+  if (options.normalize) path += '&normalize=1';
+  return path;
+}
+
+/**
  * 从插件配置推导播放 URL 选项（同步版，已经有 config 对象时用）。
  *
  * 所有把 URL 推给音箱的地方都必须经这里，不要各自手写读 config——独立歌曲直推路径

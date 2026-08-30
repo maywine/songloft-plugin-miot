@@ -25,6 +25,7 @@ const STORAGE_KEY_CONFIG = 'config';
 const STORAGE_KEY_ACCOUNTS = 'accounts';
 const STORAGE_KEY_WEBHOOKS = 'webhooks';
 const STORAGE_KEY_VOICE_COMMANDS = 'voice_commands';
+const STORAGE_KEY_VOICE_COMMANDS_VERSION = 'voice_commands_version';
 const STORAGE_KEY_SCHEDULED_TASKS = 'scheduled_tasks';
 const STORAGE_KEY_SCHEDULE_LOGS = 'schedule_logs';
 const STORAGE_KEY_AI_CONFIG = 'ai_config';
@@ -457,6 +458,14 @@ export class ConfigManager {
   /** 保存语音口令配置 */
   async saveVoiceCommands(commands: VoiceCommand[]): Promise<void> {
     await this.save(STORAGE_KEY_VOICE_COMMANDS, commands);
+  }
+
+  async getVoiceCommandsVersion(): Promise<number> {
+    return this.load<number>(STORAGE_KEY_VOICE_COMMANDS_VERSION, 0);
+  }
+
+  async saveVoiceCommandsVersion(version: number): Promise<void> {
+    await this.save(STORAGE_KEY_VOICE_COMMANDS_VERSION, version);
   }
 
   // ===== AI 配置 =====

@@ -23,18 +23,12 @@ import type { PlaylistManager } from '../player/manager';
 import type { SongLocation, ArtistSongLocation } from '../indexing/manager';
 import type { MemoryRecord } from '../memory';
 import type { OnlineSearchResult } from './online_searcher';
-import type { ConversationMessage, VoiceCommand, PlayMode, AIAnalysisResult, SearchPriority } from '../types';
-import { getDefaultVoiceCommands } from './defaults';
-export { getDefaultVoiceCommands } from './defaults';
+import type { ConversationMessage, PlayMode, AIAnalysisResult, SearchPriority } from '../types';
+import { matchVoiceCommand, shouldExecuteFixedControl } from './matcher';
 
 // ===== 类型定义 =====
 
-/** 口令匹配结果 */
-interface MatchResult {
-  command: VoiceCommand;
-  keyword: string;
-  argument: string;
-}
+type MatchResult = import('./matcher').VoiceCommandMatch;
 
 /**
  * 独立歌曲候选：不在任何歌单里的歌，由 findStandaloneSongByName 经 songs.getById 拿到完整字段。
@@ -106,28 +100,6 @@ export interface CommandTestResult {
   note?: string;
 }
 
-/** 口令类型优先级（数字越小优先级越高） */
-const COMMAND_PRIORITY: Record<string, number> = {
-  'play_artist': 1,
-  'play_song': 1,
-  'play_playlist': 2,
-  'set_play_mode': 3,
-  'set_volume': 4,
-  'favorite': 5,
-  'next': 6,
-  'previous': 7,
-  'sleep_timer': 7,
-  'cancel_sleep_timer': 7,
-  'query_sleep_timer': 7,
-  'stop': 8,
-};
-
-/** 跳字模糊匹配：关键词中间最多允许插入的字符数 */
-const FUZZY_MAX_GAP = 4;
-
-/** 跳字模糊匹配：关键词最小 rune 长度（2 字以内控制词如"停止/切歌"不参与，避免误触发） */
-const FUZZY_MIN_KEYWORD_LEN = 3;
-
 /** 语音请求到达时给后台索引刷新的短等待窗口。 */
 const INDEX_READY_WAIT_MS = 5000;
 
@@ -137,53 +109,8 @@ const URL_HEALTH_CHECK_TIMEOUT_MS = 3000;
 const FIXED_CONTROL_COMMAND_TYPES = new Set(['set_play_mode', 'set_volume', 'favorite', 'next', 'previous', 'stop', 'sleep_timer', 'cancel_sleep_timer', 'query_sleep_timer']);
 const SEARCH_COMMAND_TYPES = new Set(['play_song', 'play_playlist', 'play_artist']);
 const BUILTIN_STOP_KEYWORDS = ['暂停播放', '停止播放', '暂停音乐', '停一下', 'pause', 'stop', '暂停'];
+const LOCAL_LIBRARY_KEYWORDS = new Set(['播放本地音乐', '播放本地歌单']);
 
-/**
- * 有界跳字子序列匹配：在 query 的 rune 数组中按序查找关键词，允许中间插入有限字符。
- *
- * 对每个 `=== kwRunes[0]` 的位置作锚点各自贪心向后匹配（避免"最左锚点"漏掉更紧凑的匹配），
- * 命中后 inserted = (lastIdx - firstIdx + 1) - kwLen，仅当 inserted <= maxGap 视为候选，
- * 取 inserted 最小者返回。用于口令精确匹配零命中时的兜底（如"我想听" ⊇ "我今天想听"）。
- *
- * @returns 最佳候选的 { lastIdx, inserted }，无候选返回 null
- */
-function fuzzySubseqMatch(qRunes: string[], kwRunes: string[], maxGap: number): { lastIdx: number; inserted: number } | null {
-  const kwLen = kwRunes.length;
-  if (kwLen < FUZZY_MIN_KEYWORD_LEN) return null;
-  if (qRunes.length < kwLen) return null;
-
-  let best: { lastIdx: number; inserted: number } | null = null;
-
-  for (let start = 0; start <= qRunes.length - kwLen; start++) {
-    if (qRunes[start] !== kwRunes[0]) continue;
-
-    // 从 start 起贪心按序匹配关键词其余字符
-    let ki = 1;
-    let qi = start + 1;
-    while (qi < qRunes.length && ki < kwLen) {
-      if (qRunes[qi] === kwRunes[ki]) ki++;
-      qi++;
-    }
-    if (ki < kwLen) continue; // 关键词未完整命中
-
-    const lastIdx = qi - 1;
-    const inserted = (lastIdx - start + 1) - kwLen;
-    if (inserted > maxGap) continue;
-
-    if (best === null || inserted < best.inserted) {
-      best = { lastIdx, inserted };
-    }
-  }
-
-  return best;
-}
-
-// ===== 默认口令配置 =====
-
-/**
- * 获取默认语音口令配置（12 条）
- * 翻译自 Go 源码: plugins/songloft-plugin-xiaomi/config/manager.go GetDefaultVoiceCommands()
- */
 // ===== VoiceEngine =====
 
 /**
@@ -326,9 +253,14 @@ export class VoiceEngine {
     songloft.log.info(`[VoiceEngine] rule matching fixed control query_length=${textLength(query)}`);
     const fixedResult = await this.matchCommand(query, FIXED_CONTROL_COMMAND_TYPES) ?? this.matchBuiltinStopCommand(query);
     if (fixedResult) {
-      songloft.log.info(`[VoiceEngine] rule matched fixed control type=${fixedResult.command.type} keyword_length=${textLength(fixedResult.keyword)} argument_length=${textLength(fixedResult.argument)}`);
-      await this.executeCommand(fixedResult, accountId, msg.device_id, query);
-      return;
+      const pm = this.playlistManagerMap.get(accountId, msg.device_id);
+      const timerActive = this.getSleepTimerState(accountId, msg.device_id).active;
+      if (shouldExecuteFixedControl(fixedResult.command.type, pm?.getStatus().state, timerActive)) {
+        songloft.log.info(`[VoiceEngine] rule matched fixed control type=${fixedResult.command.type} keyword_length=${textLength(fixedResult.keyword)} argument_length=${textLength(fixedResult.argument)}`);
+        await this.executeCommand(fixedResult, accountId, msg.device_id, query);
+        return;
+      }
+      songloft.log.info(`[VoiceEngine] ignored fixed control without active playback type=${fixedResult.command.type}`);
     }
 
     let memoryEnabled = false;
@@ -739,17 +671,9 @@ export class VoiceEngine {
   // ===== 私有方法 - 口令匹配 =====
 
   private matchBuiltinStopCommand(query: string): MatchResult | null {
-    const normalizedQuery = query.toLowerCase();
-    const keyword = BUILTIN_STOP_KEYWORDS
-      .filter(item => normalizedQuery.includes(item))
-      .sort((a, b) => Array.from(b).length - Array.from(a).length)[0];
-    if (!keyword) return null;
-
-    return {
-      command: { type: 'stop', keywords: BUILTIN_STOP_KEYWORDS, enabled: true },
-      keyword,
-      argument: '',
-    };
+    return matchVoiceCommand(query.toLowerCase(), [
+      { type: 'stop', keywords: BUILTIN_STOP_KEYWORDS, enabled: true },
+    ]);
   }
 
   /**
@@ -760,79 +684,7 @@ export class VoiceEngine {
    */
   private async matchCommand(query: string, allowedTypes?: Set<string>): Promise<MatchResult | null> {
     const commands = await this.configManager.getVoiceCommands();
-    if (commands.length === 0) {
-      return null;
-    }
-
-    const enabledCommands = commands
-      .filter(cmd => cmd.enabled && (!allowedTypes || allowedTypes.has(cmd.type)))
-      .map(cmd => ({
-        cmd,
-        priority: COMMAND_PRIORITY[cmd.type] ?? 99,
-      }));
-
-    if (enabledCommands.length === 0) {
-      return null;
-    }
-
-    // 跨优先级最长关键词匹配：遍历所有命令，取全局最长匹配，长度相同时高优先级优先。
-    // 防止短关键词（如"播放"）窃取更长关键词（如"播放歌单"）的匹配。
-    let bestMatch: MatchResult | null = null;
-    let bestKeywordLen = 0;
-    let bestPriority = 99;
-
-    for (const item of enabledCommands) {
-      for (const keyword of item.cmd.keywords) {
-        const idx = query.indexOf(keyword);
-        if (idx >= 0) {
-          const kwLen = Array.from(keyword).length;
-          if (kwLen > bestKeywordLen || (kwLen === bestKeywordLen && item.priority < bestPriority)) {
-            bestKeywordLen = kwLen;
-            bestPriority = item.priority;
-            bestMatch = {
-              command: item.cmd,
-              keyword,
-              argument: query.slice(idx + keyword.length).trim(),
-            };
-          }
-        }
-      }
-    }
-
-    if (bestMatch) {
-      return bestMatch;
-    }
-
-    // 第二趟：精确匹配零命中时，跑有界跳字子序列兜底（如"我想听" ⊇ "我今天想听"）。
-    // tiebreak 与第一趟一致：最长关键词 > inserted 最小 > 高优先级。
-    const qRunes = Array.from(query);
-    let bestInserted = Infinity;
-
-    for (const item of enabledCommands) {
-      for (const keyword of item.cmd.keywords) {
-        const kwRunes = Array.from(keyword);
-        const m = fuzzySubseqMatch(qRunes, kwRunes, FUZZY_MAX_GAP);
-        if (!m) continue;
-
-        const kwLen = kwRunes.length;
-        const better =
-          kwLen > bestKeywordLen ||
-          (kwLen === bestKeywordLen && m.inserted < bestInserted) ||
-          (kwLen === bestKeywordLen && m.inserted === bestInserted && item.priority < bestPriority);
-        if (better) {
-          bestKeywordLen = kwLen;
-          bestInserted = m.inserted;
-          bestPriority = item.priority;
-          bestMatch = {
-            command: item.cmd,
-            keyword,
-            argument: qRunes.slice(m.lastIdx + 1).join('').trim(),
-          };
-        }
-      }
-    }
-
-    return bestMatch;
+    return matchVoiceCommand(query, commands, allowedTypes);
   }
 
   // ===== 私有方法 - 口令执行 =====
@@ -847,7 +699,11 @@ export class VoiceEngine {
 
     switch (result.command.type) {
       case 'play_playlist':
-        await this.executePlayPlaylist(result.argument, accountId, deviceId);
+        if (!result.argument && LOCAL_LIBRARY_KEYWORDS.has(result.keyword)) {
+          await this.executePlayLocalLibrary(accountId, deviceId);
+        } else {
+          await this.executePlayPlaylist(result.argument, accountId, deviceId);
+        }
         break;
       case 'play_song':
         playedSong = await this.executePlaySong(result.argument, accountId, deviceId);
@@ -1086,6 +942,32 @@ export class VoiceEngine {
     }
 
     songloft.log.error(`[VoiceEngine] play playlist failed id=${matchedPlaylist.id}`);
+  }
+
+  /** 明确的“本地音乐”口令播放全部本地歌曲，不借用歌单顺序或内置空歌单。 */
+  private async executePlayLocalLibrary(accountId: string, deviceId: string): Promise<void> {
+    this.cancelPendingResume();
+    const pm = await this.playlistManagerMap.getOrCreate(accountId, deviceId);
+    pm.prepareForNewPlayback();
+
+    try {
+      await this.minaService.stopPlay(accountId, deviceId);
+    } catch (e) {
+      songloft.log.warn('[VoiceEngine] failed to interrupt broadcast: ' + safeErrorForLog(e));
+    }
+
+    const songs = (await songloft.songs.list({ limit: 100000 })) ?? [];
+    const localSongs = songs.filter((song: any) => song?.type === 'local' && song?.url);
+    if (localSongs.length === 0) {
+      songloft.log.warn('[VoiceEngine] No local songs available');
+      await this.minaService.textToSpeech(accountId, deviceId, '没有找到本地音乐');
+      return;
+    }
+
+    const ok = await pm.playWithSongs(localSongs as any, 0, 'order', '本地音乐');
+    if (!ok) {
+      songloft.log.warn('[VoiceEngine] Failed to play local library');
+    }
   }
 
   /**

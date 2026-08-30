@@ -11,7 +11,7 @@ import { TaskExecutor } from './schedule/executor';
 import { ConversationMonitor } from './conversation/monitor';
 import { VoiceEngine } from './voicecmd/engine';
 import { AIAnalyzer } from './voicecmd/ai_analyzer';
-import { getDefaultVoiceCommands } from './voicecmd/engine';
+import { getDefaultVoiceCommands, migrateVoiceCommands, VOICE_COMMAND_SCHEMA_VERSION } from './voicecmd/defaults';
 import { IndexingManager } from './indexing/manager';
 import { MemoryService } from './memory';
 import { redactURLForLog, safeErrorForLog } from './utils/safe_log';
@@ -119,8 +119,15 @@ async function onInit(): Promise<void> {
   const executor = new TaskExecutor(configManager, accountManager, minaService, playlistManagerMap, indexingManager, conversationMonitor, groupCoordinator);
   scheduler = new Scheduler(configManager, executor);
 
-  // 如果配置中没有语音口令配置，写入默认配置；已有配置时补充新增的默认口令类型
-  const existingCommands = await configManager.getVoiceCommands();
+  // 先按版本迁移旧口令，再为已有配置补充新增的默认口令类型。
+  let existingCommands = await configManager.getVoiceCommands();
+  const voiceCommandVersion = await configManager.getVoiceCommandsVersion();
+  if (voiceCommandVersion < VOICE_COMMAND_SCHEMA_VERSION) {
+    existingCommands = migrateVoiceCommands(existingCommands);
+    await configManager.saveVoiceCommands(existingCommands);
+    await configManager.saveVoiceCommandsVersion(VOICE_COMMAND_SCHEMA_VERSION);
+    songloft.log.info(`[VoiceCmd] Migrated voice commands schema ${voiceCommandVersion} -> ${VOICE_COMMAND_SCHEMA_VERSION}`);
+  }
   if (!existingCommands || existingCommands.length === 0) {
     const defaultCommands = getDefaultVoiceCommands();
     await configManager.saveVoiceCommands(defaultCommands);

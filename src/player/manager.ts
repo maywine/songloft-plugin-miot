@@ -6,7 +6,7 @@
 
 import { ConfigManager } from '../config/manager';
 import { MinaService } from '../service/service';
-import { URLBuilder, playbackOptionsOf, playbackOptionsFromConfig } from './url_builder';
+import { URLBuilder, buildCurrentSongPrewarmPath, playbackOptionsOf, playbackOptionsFromConfig } from './url_builder';
 import { getHostBaseUrl, callHostAPI } from '../utils/http';
 import { opaqueID, safeErrorForLog, textLength } from '../utils/safe_log';
 import type { PlayState, PlayMode, PlayerStatus, DeviceTargetRef, DeviceGroup } from '../types';
@@ -30,6 +30,9 @@ const EXTERNAL_STOP_POLL_INTERVAL_MS = 20000;
 const EXTERNAL_STOP_TAIL_GUARD_SEC = 15;
 /** 连续命中"未在播放"多少次才判定为真实外部停止，抵御小爱偶发误报（单次误报会被下一轮探测纠正） */
 const EXTERNAL_STOP_CONFIRM_COUNT = 2;
+
+/** 树莓派冷缓存 FLAC 转 MP3 常需数十秒；超时后降级为原播放路径。 */
+const CURRENT_SONG_PREWARM_TIMEOUT_MS = 180000;
 
 /** 判断 playlistId 是否为临时歌单 */
 export function isTempPlaylistId(id: number): boolean {
@@ -986,8 +989,22 @@ export class PlaylistManager {
     // 一次 getConfig 两处消费。
     const config = await this.configManager.getConfig();
 
+    // 小爱会在拿不到首个音频响应时放弃播放。先用 HEAD 让宿主同步产出当前歌曲的转码缓存，
+    // 不下载正文；失败或超时仍降级到原播放路径，避免单个坏文件阻塞整个歌单。
+    const playbackOptions = playbackOptionsOf(config, { seekSeconds, speed: effectiveSpeed });
+    const prewarmPath = buildCurrentSongPrewarmPath(song, playbackOptions);
+    if (prewarmPath) {
+      const startedAt = Date.now();
+      try {
+        await callHostAPI('HEAD', prewarmPath, undefined, { timeoutMs: CURRENT_SONG_PREWARM_TIMEOUT_MS });
+        songloft.log.info(`[PlaylistManager] current song ready song_id=${song.id} dur_ms=${Date.now() - startedAt}`);
+      } catch (e) {
+        songloft.log.warn(`[PlaylistManager] current song prewarm failed song_id=${song.id} dur_ms=${Date.now() - startedAt} error=${safeErrorForLog(e)}`);
+      }
+    }
+
     // 构造播放URL
-    const songURL = await URLBuilder.buildSongURL(song, playbackOptionsOf(config, { seekSeconds, speed: effectiveSpeed }));
+    const songURL = await URLBuilder.buildSongURL(song, playbackOptions);
     if (!songURL) {
       songloft.log.error(`[PlaylistManager] failed to build song URL song_id=${song.id}`);
       return false;

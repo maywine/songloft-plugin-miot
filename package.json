@@ -6,7 +6,7 @@
   "scripts": {
     "prebuild": "node scripts/fetch-holidays.mjs && node scripts/build-pinyin-data.mjs",
     "build": "node scripts/build-plugin.mjs",
-    "test": "node tests/run-security.mjs && node frontend/tests/run.mjs",
+    "test": "node tests/run-security.mjs && node tests/run-unit.mjs && node frontend/tests/run.mjs",
     "predev": "node scripts/fetch-holidays.mjs && node scripts/build-pinyin-data.mjs",
     "dev": "songloft-plugin dev",
     "validate": "songloft-plugin validate",
